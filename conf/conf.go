@@ -315,24 +315,31 @@ func (conf *Conf) AllProbers() []probe.Prober {
 func allProbersHelper(i interface{}) []probe.Prober {
 
 	var probers []probe.Prober
+	// i 配置，配置的类型 和值? conf
 	t := reflect.TypeOf(i)
 	v := reflect.ValueOf(i)
+	// 类型不是结构体则直接返回空的probers
 	if t.Kind() != reflect.Struct {
 		return probers
 	}
-
+	// 遍历conf的字段
 	for i := 0; i < t.NumField(); i++ {
+		// 每个类型字段的种类
 		tField := t.Field(i).Type.Kind()
+		// 如果是结构体，则加入到probers切片
 		if tField == reflect.Struct {
+			// 直接调用 append(), 递归 allProbersHelper
 			probers = append(probers, allProbersHelper(v.Field(i).Interface())...)
 			continue
 		}
+		// 如果不是切片，不处理继续遍历
 		if tField != reflect.Slice {
 			continue
 		}
-
+		// 值的字段
 		vField := v.Field(i)
 		for j := 0; j < vField.Len(); j++ {
+			// 不是探测类型则不处理
 			if !isProbe(vField.Index(j).Addr().Type()) {
 				//log.Debugf("%s is not a probe type", vField.Index(j).Type())
 				continue
@@ -352,7 +359,7 @@ func isNotify(t reflect.Type) bool {
 	return t.Implements(modelType)
 }
 
-// AllNotifiers return all notifiers
+// AllNotifiers return all notifiers  同 conf.AllProbers
 func (conf *Conf) AllNotifiers() []notify.Notify {
 	var notifies []notify.Notify
 
