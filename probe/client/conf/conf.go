@@ -25,7 +25,7 @@ import (
 	"github.com/megaease/easeprobe/probe/base"
 )
 
-// Driver Interface
+// Driver Interface 由子类实现，比如 Kafka、redis
 type Driver interface {
 	Kind() string
 	Probe() (bool, string)
