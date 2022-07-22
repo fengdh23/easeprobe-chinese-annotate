@@ -1,4 +1,10 @@
 # EaseProbe
+[![Go Report Card](https://goreportcard.com/badge/github.com/megaease/easeprobe)](https://goreportcard.com/report/github.com/megaease/easeprobe)
+[![codecov](https://codecov.io/gh/megaease/easeprobe/branch/main/graph/badge.svg?token=L7SR8X6SRN)](https://codecov.io/gh/megaease/easeprobe)
+[![Build](https://github.com/megaease/easeprobe/actions/workflows/test.yaml/badge.svg)](https://github.com/megaease/easeprobe/actions/workflows/test.yaml)
+[![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/megaease/easeprobe)](https://github.com/megaease/easeprobe/blob/main/go.mod)
+[![Join MegaEase Slack](https://img.shields.io/badge/slack-megaease-brightgreen?logo=slack)](https://join.slack.com/t/openmegaease/shared_invite/zt-upo7v306-lYPHvVwKnvwlqR0Zl2vveA)
+
 
 EaseProbe is a simple, standalone, and lightWeight tool that can do health/status checking, written in Go.
 
@@ -11,28 +17,46 @@ EaseProbe is a simple, standalone, and lightWeight tool that can do health/statu
     - [1.1 Probe](#11-probe)
     - [1.2 Notification](#12-notification)
     - [1.3 Report](#13-report)
-  - [2. Getting Start](#2-getting-start)
+    - [1.4 Channel](#14-channel)
+    - [1.5 Administration](#15-administration)
+    - [1.6 Prometheus Metrics Exporter](#16-prometheus-metrics-exporter)
+  - [2. Getting Started](#2-getting-started)
     - [2.1 Build](#21-build)
-    - [2.2 Run](#22-run)
+    - [2.2 Configure](#22-configure)
+    - [2.3 Run](#23-run)
   - [3. Configuration](#3-configuration)
     - [3.1 HTTP Probe Configuration](#31-http-probe-configuration)
     - [3.2 TCP Probe Configuration](#32-tcp-probe-configuration)
     - [3.3 Shell Command Probe Configuration](#33-shell-command-probe-configuration)
     - [3.4 SSH Command Probe Configuration](#34-ssh-command-probe-configuration)
-    - [3.5 Host Resource Usage Probe Configuration](#35-host-resource-usage-probe-configuration)
-    - [3.6 Native Client Probe](#36-native-client-probe)
-    - [3.7 Notification Configuration](#37-notification-configuration)
-    - [3.8 Global Setting Configuration](#38-global-setting-configuration)
-  - [4. Community](#4-community)
-  - [5. License](#5-license)
+    - [3.5 TLS Probe Configuration](#35-tls-probe-configuration)
+    - [3.6 Host Resource Usage Probe Configuration](#36-host-resource-usage-probe-configuration)
+    - [3.7 Native Client Probe Configuration](#37-native-client-probe-configuration)
+    - [3.8 Notification Configuration](#38-notification-configuration)
+    - [3.9 Global Setting Configuration](#39-global-setting-configuration)
+  - [4. Benchmark](#4-benchmark)
+  - [5. Contributing](#5-contributing)
+  - [6. Community](#6-community)
+  - [7. License](#7-license)
 
 ## 1. Overview
 
-EaseProbe would do 3 kinds of work - **Probe**, **Notify**, and **Report**.
+EaseProbe is designed to do three kinds of work - **Probe**, **Notify**, and **Report**.
 
 ### 1.1 Probe
 
-Ease Probe supports the following probing methods: **HTTP**, **TCP**, **Shell Command**, **SSH Command**,  **Host Resource Usage**, and **Native Client**.
+EaseProbe supports the following probing methods: **HTTP**, **TCP**, **Shell Command**, **SSH Command**,  **Host Resource Usage**, and **Native Client**.
+
+Each probe is identified by the method it supports (eg `http`), a unique name (across all probes in the configuration file) and the method specific parameters.
+
+On application startup, the configured probes are scheduled for their initial fire up based on the following criteria:
+* Less than or equal to 60 total probers exist: the delay between initial prober fire-up is `1 second`
+* More than 60 total probers exist: the startup is scheduled based on the following equation `timeGap = DefaultProbeInterval / numProbes`
+
+> **Note**:
+>
+> **If multiple probes using the same name then this could lead to corruption of the metrics data and/or the behavior of the application in non-deterministic way.**
+
 
 - **HTTP**. Checking the HTTP status code, Support mTLS, HTTP Basic Auth, and can set the Request Header/Body. ( [HTTP Probe Configuration](#31-http-probe-configuration) )
 
@@ -84,7 +108,15 @@ Ease Probe supports the following probing methods: **HTTP**, **TCP**, **Shell Co
         contain: easeprobe
   ```
 
-- **Host**. Run a SSH command on remote host and check the CPU, Memory, and Disk usage. ( [Host Load Probe](#35-host-resource-usage-probe-configuration) )
+- **TLS**. Ping the remote endpoint, can probe for revoked or expired certificates ( [TLS Probe Configuration](#35-tls-probe-configuration) )
+
+  ```YAML
+  tls:
+    - name: expired test
+      host: expired.badssl.com:443
+  ```
+
+- **Host**. Run an SSH command on a remote host and check the CPU, Memory, and Disk usage. ( [Host Load Probe](#36-host-resource-usage-probe-configuration) )
 
   ```yaml
   host:
@@ -98,20 +130,27 @@ Ease Probe supports the following probing methods: **HTTP**, **TCP**, **Shell Co
           disk: 0.90  # disk usage 90%
   ```
 
-- **Client**. Currently, support the following native client. Support the mTLS. ( [Native Client Probe](#36-native-client-probe) )
+- **Client**. Currently, support the following native client. Support the mTLS. ( refer to: [Native Client Probe Configuration](#37-native-client-probe-configuration) )
   - **MySQL**. Connect to the MySQL server and run the `SHOW STATUS` SQL.
   - **Redis**. Connect to the Redis server and run the `PING` command.
+  - **Memcache**. Connect to a Memcache server and run the `version` command or check based on key/value checks.
   - **MongoDB**. Connect to MongoDB server and just ping server.
   - **Kafka**. Connect to Kafka server and list all topics.
   - **PostgreSQL**. Connect to PostgreSQL server and run `SELECT 1` SQL.
   - **Zookeeper**. Connect to Zookeeper server and run `get /` command.
 
+  Most of the clients support the additional validity check of data pulled from the service (such as checking a redis or memcache key for specific values). Check the documentation of the corresponding client for details on how to enable.
+
   ```YAML
   client:
-    - name: Kafka Native Client (local)
-      driver: "kafka"
-      host: "localhost:9093"
-      # mTLS
+    - name: MySQL Native Client (local)
+      driver: "mysql"
+      host: "localhost:3306"
+      user: "root"
+      password: "pass"
+      data: # Optional - Data to check
+        "database:table:column:id:100": "value"
+      # mTLS - Optional
       ca: /path/to/file.ca
       cert: /path/to/file.crt
       key: /path/to/file.key
@@ -120,25 +159,37 @@ Ease Probe supports the following probing methods: **HTTP**, **TCP**, **Shell Co
 
 ### 1.2 Notification
 
-Ease Probe supports the following notifications:
+EaseProbe supports the following notifications:
 
 - **Slack**. Using Webhook for notification
 - **Discord**. Using Webhook for notification
 - **Telegram**. Using Telegram Bot for notification
+- **Teams**. Support the [Microsoft Teams](https://docs.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/connectors-using?tabs=cURL#setting-up-a-custom-incoming-webhook) notification.
 - **Email**. Support multiple email addresses.
 - **AWS SNS**. Support AWS Simple Notification Service.
 - **WeChat Work**. Support Enterprise WeChat Work notification.
 - **DingTalk**. Support the DingTalk notification.
 - **Lark**. Support the Lark(Feishu) notification.
-- **Log File**. Write the notification into a log file
+- **SMS**. Support SMS notification with multiple SMS service providers - [Twilio](https://www.twilio.com/sms), [Vonage(Nexmo)](https://developer.vonage.com/messaging/sms/overview), [YunPain](https://www.yunpian.com/doc/en/domestic/list.html)
+- **Log**. Write the notification into a log file or syslog.
+- **Shell**. Run a shell command to notify the result. (see [example](resources/scripts/notify/notify.sh))
 
-**Note**:
-
-- The notification is **Edge-Triggered Mode**, only notified while the status is changed.
+> **Note**:
+>
+> The notification is **Edge-Triggered Mode**, this means that these notifications are triggered when the status changes.
+>
+> Windows platforms do not support syslog as notification method.
 
 ```YAML
 # Notification Configuration
 notify:
+  log:
+    - name: log file # local log file
+      file: /var/log/easeprobe.log
+    - name: Remote syslog # syslog (!!! Not For Windows !!!)
+      file: syslog # <-- must be "syslog" keyword
+      host: 127.0.0.1:514 # remote syslog server - optional
+      network: udp #remote syslog network [tcp, udp] - optional
   slack:
     - name: "MegaEase#Alert"
       webhook: "https://hooks.slack.com/services/........../....../....../"
@@ -172,9 +223,27 @@ notify:
   lark:
     - name: "lark alert service"
       webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/d5366199-xxxx-xxxx-bd81-a57d1dd95de4"
+  sms:
+    - name: "sms alert service"
+      provider: "yunpian"
+      key: xxxxxxxxxxxx # yunpian apikey
+      mobile: 123456789,987654321 # mobile phone number, multiple phone number joint by `,`
+      sign: "xxxxxxxx" # need to register; usually brand name
+  teams:
+      - name: "teams alert service"
+        webhook: "https://outlook.office365.com/webhook/a1269812-6d10-44b1-abc5-b84f93580ba0@9e7b80c7-d1eb-4b52-8582-76f921e416d9/IncomingWebhook/3fdd6767bae44ac58e5995547d66a4e4/f332c8d9-3397-4ac5-957b-b8e3fc465a8c" # see https://docs.microsoft.com/en-us/outlook/actionable-messages/send-via-connectors
+  shell: # EaseProbe set the environment variables -
+         # (see the example: resources/scripts/notify/notify.sh)
+    - name: "shell alert service"
+      cmd: "/bin/bash"
+      args:
+        - "-c"
+        - "/path/to/script.sh"
+      env: # set the env to the notification command
+        - "EASEPROBE=1"
 ```
 
-Check the  [Notification Configuration](#37-notification-configuration) to see how to configure it.
+Check the  [Notification Configuration](#38-notification-configuration) to see how to configure it.
 
 ### 1.3 Report
 
@@ -192,42 +261,261 @@ Check the  [Notification Configuration](#37-notification-configuration) to see h
 
 - **SLA Live Report**. You can query the SLA Live Report
 
-The EaseProbe would listen on `0.0.0.0:8181` port by default. And you can access the Live SLA report by the following URL:
+  The EaseProbe would listen on the `0.0.0.0:8181` port by default. And you can access the Live SLA report by the following URL:
 
   - HTML: `http://localhost:8181/`
-  - JSON: `http://localhost:8181/api/v1/sla/`
+  - JSON: `http://localhost:8181/api/v1/sla`
+
+You can use the following URL query options for both HTML and JSON:
+  - `refresh`: (_HTML only_) refresh the page every given seconds (ex, `?refresh=30s` refreshes the page every 30 seconds)
+  - `pg` & `sz`: page number and page size (ex, `?pg=2&sz=10` shows the second page with 10 probers), default page size is `100`
+  - `name`: filter the probers that contain the value of name (ex, `?name=probe1` list the probers which name containing `probe1`)
+  - `kind`: filter the probers with the kind (ex, `?kind=http` list the probers with kind `http`)
+  - `ep`: filter the probers with the endpoint (ex, `?ep=example.com` list the probers which endpoint containing  `example.com`)
+  - `msg`: filter the probers with the message (ex, `?msg=example` list the probers which message containing `example`)
+  - `status`: filter the probers with specific status, accepted values `up` or `down` (ex. `?status=up` list only probers with status `up`).
+  - `gte`: filter the probers with SLA greater than or equal to the given percentage (ex. `?gte=50` filter only hosts with SLA percentage `>= 50%`)
+  - `lte`:filter the probers with SLA less than or equal to the given percentage (ex. `?lte=90` filter only hosts with SLA percentage `<= 90%` )
+
+  Refer to the [Global Setting Configuration](#39-global-setting-configuration) to see how to configure the access log.
 
 
-For more information, please check the [Global Setting Configuration](#38-global-setting-configuration)
+- **SLA Data Persistence**. Save the SLA statistics data on the disk.
 
-## 2. Getting Start
+  The SLA data would be persisted in `$CWD/data/data.yaml` by default. If you want to configure the path, you can do it in the `settings` section.
+
+  When EaseProbe starts, it looks for the location of `data.yaml` and if found, loads the file and removes any probes that are no longer present in the configuration file. Setting a value of `"-"` for `data:` disables SLA persistence (eg `data: "-"`).
+
+  ```YAML
+  settings:
+    sla:
+      # SLA data persistence file path.
+      # The default location is `$CWD/data/data.yaml`
+      data: /path/to/data/file.yaml
+  ```
+
+For more information, please check the [Global Setting Configuration](#39-global-setting-configuration)
+
+
+### 1.4 Channel
+
+The Channel is used for connecting the Probers and the Notifiers. It can be configured for every Prober and Notifier.
+
+This feature could help you group the Probers and Notifiers into a logical group.
+
+> **Note**:
+>
+> If no Channel is defined on a probe or notify entry, then the default channel will be used. The default channel name is `__EaseProbe_Channel__`
+>
+> EaseProbe versions prior to v1.5.0, do not have support for the `channel` feature
+
+For example:
+
+```YAML
+http:
+   - name: probe A
+     channels : [ Dev_Channel, Manager_Channel ]
+shell:
+   - name: probe B
+     channels: [ Ops_Channel ]
+notify:
+   - discord: Discord
+     channels: [ Dev_Channel, Ops_Channel ]
+   - email: Gmail
+     channels: [ Mgmt_Channel ]
+```
+
+Then, we will have the following diagram
+
+```
+┌───────┐          ┌──────────────┐
+│Probe B├─────────►│ Mgmt_Channel ├────┐
+└───────┘          └──────────────┘    │
+                                       │
+                                       │
+                   ┌─────────────┐     │   ┌─────────┐
+            ┌─────►│ Dev_Channel ├─────▼───► Discord │
+            │      └─────────────┘         └─────────┘
+┌───────┐   │
+│Probe A├───┤
+└───────┘   │
+            │      ┌────────────┐          ┌─────────┐
+            └─────►│ QA_Channel ├──────────►  Gmail  │
+                   └────────────┘          └─────────┘
+```
+
+### 1.5 Administration
+
+There are some administration configuration options:
+
+**PID file**
+
+  The EaseProbe would create a PID file (default `$CWD/easeprobe.pid`) when it starts. it can be configured by:
+
+  ```YAML
+  settings:
+    pid: /var/run/easeprobe.pid
+  ```
+
+  - If the file already exists, EaseProbe would overwrite it.
+  - If the file cannot be written, EaseProbe would exit with an error.
+
+  If you want to disable the PID file, you can configure the pid file to "".
+
+  ```YAML
+  settings:
+    pid: "" # EaseProbe won't create a PID file
+  ```
+
+**Log file Rotation**
+
+  There are two types of the log files: **Application Log** and **HTTP Access Log**.
+
+  Both application and HTTP access logs will be displayed on StdOut by default. Both can be be configured by the `log:` directive such as:
+
+  ```YAML
+  log:
+    file: /path/to/log/file
+    self_rotate: true # default: true
+  ```
+
+  If `self_rotate` is `true`, EaseProbe would rotate the log automatically, and the following options are available:
+
+  ```YAML
+    size: 10 # max size of log file. default: 10M
+    age: 7 # max age days of log file. default: 7 days
+    backups: 5 # max backup log files. default: 5
+    compress: true # compress. default: true
+  ```
+
+  If `self_rotate` is `false`, EaseProbe will not rotate the log, and the log file will have to be rotated by a 3rd-party tool (such as `logrotate`) or manually by the administrator.
+
+  ```shell
+  mv /path/to/easeprobe.log /path/to/easeprobe.log.0
+  kill -HUP `cat /path/to/easeprobe.pid`
+  ```
+
+  EaseProbe accepts the `HUP` signal to rotate the log.
+
+### 1.6 Prometheus Metrics Exporter
+
+EaseProbe supports Prometheus metrics exporter. The Prometheus endpoint is `http://localhost:8181/metrics` by default.
+
+Currently, All of the Probers support the following metrics:
+
+  - `total`: the total number of probes
+  - `duration`: Probe duration in milliseconds
+  - `status`: Probe status
+  - `SLA`: Probe SLA percentage
+
+And for the different Probers, the following metrics are available:
+
+- HTTP Probe
+  - `status_code`: HTTP status code
+  - `content_len`: HTTP content length
+  - `dns_duration`: DNS duration in milliseconds
+  - `connect_duration`: TCP connection duration in milliseconds
+  - `tls_duration`: TLS handshake duration in milliseconds
+  - `send_duration`: HTTP send duration in milliseconds
+  - `wait_duration`: HTTP wait duration in milliseconds
+  - `transfer_duration`: HTTP transfer duration in milliseconds
+  - `total_duration`: HTTP total duration in milliseconds
+
+- TLS Probe
+  - `earliest_cert_expiry`: last TLS chain expiry in timestamp seconds
+  - `last_chain_expiry_timestamp_seconds`: earliest TLS cert expiry in Unix time
+
+- Shell & SSH Probe
+  - `exit_code`: exit code of the command
+  - `output_len`: length of the output
+
+- Host Probe
+  - `cpu`: CPU usage in percentage
+  - `memory`: memory usage in percentage
+  - `disk`: disk usage in percentage
+
+
+The following snapshot is the Grafana panel for host CPU metrics
+
+![](./docs/grafana.demo.png)
+
+Refer to the [Global Setting Configuration](#39-global-setting-configuration) for further details on how to configure the HTTP server.
+
+## 2. Getting Started
+
+You can get started with EaseProbe, by any of the following methods:
+* Download the release for your platform from https://github.com/megaease/easeprobe/releases
+* Use the available EaseProbe docker image `docker run -it megaease/easeprobe`
+* Build `easeprobe` from sources
 
 ### 2.1 Build
 
 Compiler `Go 1.18+` (Generics Programming Support)
 
-Use `make` to make the binary file. the target is under the `build/bin` directory
+Use `make` to build and produce the `easeprobe` binary file. The executable is produced under the `build/bin` directory
 
 ```shell
 $ make
 ```
+### 2.2 Configure
 
-### 2.2 Run
+Read the [Configuration Guide](#3-configuration) to learn how to configure EaseProbe.
+
+Create the configuration file - `$CWD/config.yaml`.
+
+The following is an example of simple configuration file to get started:
+
+```YAML
+http: # http probes
+  - name: EaseProbe Github
+    url: https://github.com/megaease/easeprobe
+notify:
+  log:
+    - name: log file # local log file
+      file: /var/log/easeprobe.log
+settings:
+  probe:
+    timeout: 30s # the time out for all probes
+    interval: 1m # probe every minute for all probes
+```
+
+### 2.3 Run
 
 Running the following command for the local test
 
 ```shell
 $ build/bin/easeprobe -f config.yaml
 ```
-
+* `-f` configuration file or URL. Can also be achieved by setting the environment variable `PROBE_CONFIG`
+* `-d` dry run. Can also be achieved by setting the environment variable `PROBE_DRY`
 
 ## 3. Configuration
 
-The following configuration is an example.
+EaseProbe can be configured by supplying a YAML file or URL to fetch configuration settings from.
 
-**Notes**: All probes have the following options:
+By default, EaseProbe will look for its `config.yaml` on the current folder. This behavior can be changed by supplying the `-f` parameter.
 
-- `timeout` - the maximum time to wait for the probe to complete. default : `30s`.
+```shell
+easeprobe -f path/to/config.yaml
+easeprobe -f https://example.com/config
+```
+
+The following environment variables can be used to fine-tune the request to the configuration file
+
+* `HTTP_AUTHORIZATION`
+* `HTTP_TIMEOUT`
+
+And the configuration file should be versioned, the version should be aligned with the EaseProbe binary version.
+
+```yaml
+version: v1.5.0
+```
+
+The following example configurations illustrate the EaseProbe supported features.
+
+**Note**:   All probes have the following options:
+
+- `timeout` - the maximum time to wait for the probe to complete. default: `30s`.
 - `interval` - the interval time to run the probe. default: `1m`.
 
 
@@ -277,14 +565,26 @@ http:
     ca: /path/to/file.ca
     cert: /path/to/file.crt
     key: /path/to/file.key
+    # TLS
+    insecure: true # skip any security checks, useful for self-signed and expired certs. default: false
     # HTTP successful response code range, default is [0, 499].
     success_code:
       - [200,206] # the code >=200 and <= 206
       - [300,308] # the code >=300 and <= 308
+    # Response Checking
+    contain: "success" # response body must contain this string, if not the probe is considered failed.
+    not_contain: "failure" # response body must NOT contain this string, if it does the probe is considered failed.
+    regex: false # if true, the contain and not_contain will be treated as regular expression. default: false
     # configuration
     timeout: 10s # default is 30 seconds
 
 ```
+
+> **Note**:
+>
+> The Regular Expression supported refer to https://github.com/google/re2/wiki/Syntax
+
+
 ### 3.2 TCP Probe Configuration
 
 ```YAML
@@ -322,11 +622,15 @@ shell:
       - "-h"
       - "127.0.0.1"
       - "ping"
+    clean_env: true # Do not pass the OS environment variables to the command
+                    # default: false
     env:
       # set the `REDISCLI_AUTH` environment variable for redis password
       - "REDISCLI_AUTH=abc123"
     # check the command output, if does not contain the PONG, mark the status down
     contain : "PONG"
+    not_contain: "failure" # response body must NOT contain this string, if it does the probe is considered failed.
+    regex: false # if true, the `contain` and `not_contain` will be treated as regular expression. default: false
 
   # Run Zookeeper command `stat` to check the zookeeper status
   - name: Zookeeper (Local)
@@ -336,6 +640,10 @@ shell:
       - "echo stat | nc 127.0.0.1 2181"
     contain: "Mode:"
 ```
+
+> **Note**:
+>
+> The Regular Expression supported refer to https://github.com/google/re2/wiki/Syntax
 
 ### 3.4 SSH Command Probe Configuration
 
@@ -348,7 +656,7 @@ The `host` supports the following configuration
 - `example.com:22`
 - `user@example.com:22`
 
-The following are example of SSH probe configuration.
+The following are examples of SSH probe configuration.
 
 ```YAML
 # SSH Probe Configuration
@@ -358,10 +666,10 @@ ssh:
     aws: # bastion host ID      ◄──────────────────────────────┐
       host: aws.basition.com:22 #                              │
       username: ubuntu # login user                            │
-      key: /patch/to/aws/basion/key.pem # private key file     │
+      key: /path/to/aws/basion/key.pem # private key file      │
     gcp: # bastion host ID                                     │
       host: ubuntu@gcp.basition.com:22 # bastion host          │
-      key: /patch/to/gcp/basion/key.pem # private key file     │
+      key: /path/to/gcp/basion/key.pem # private key file      │
   # SSH Probe configuration                                    │
   servers:   #                                                 │
     # run redis-cli ping and check the "PONG"                  │
@@ -381,7 +689,9 @@ ssh:
         - "REDISCLI_AUTH=abc123"
       # check the command output, if does not contain the PONG, mark the status down
       contain : "PONG"
-    
+      not_contain: "failure" # response body must NOT contain this string, if it does the probe is considered failed.
+      regex: false # if true, the contain and not_contain will be treated as regular expression. default: false
+
     # Check the process status of `Kafka`
     - name:  Kafka (GCP)
       bastion: gcp         #  ◄------ bastion host id
@@ -390,17 +700,42 @@ ssh:
       key: /path/to/private.key
       cmd: "ps -ef | grep kafka"
 ```
+> **Note**:
+>
+> The Regular Expression supported refer to https://github.com/google/re2/wiki/Syntax
 
-### 3.5 Host Resource Usage Probe Configuration
+### 3.5 TLS Probe Configuration
 
-Support the host probe, the configuration example as below.
+TLS ping to remote endpoint, can probe for revoked or expired certificates
 
-The feature probe the CPU, Memory, and Disk usage, if one of them exceeds the threshold, then mark the host as status down.
+  ```YAML
+  tls:
+    - name: expired test
+      host: expired.badssl.com:443
+      insecure_skip_verify: true # dont check cert validity
+      expire_skip_verify: true # dont check cert expire date
+      alert_expire_before: 168h # alert if cert expire date is before X, the value is a Duration, see https://pkg.go.dev/time#ParseDuration. example: 1h, 1m, 1s. expire_skip_verify must be false to use this feature.
+      # root_ca_pem_path: /path/to/root/ca.pem # ignore if root_ca_pem is present
+      # root_ca_pem: |
+      #   -----BEGIN CERTIFICATE-----
+    - name: untrust test
+      host: untrusted-root.badssl.com:443
+      # insecure_skip_verify: true # dont check cert validity
+      # expire_skip_verify: true # dont check cert expire date
+      # root_ca_pem_path: /path/to/root/ca.pem # ignore if root_ca_pem is present
+      # root_ca_pem: |
+      #   -----BEGIN CERTIFICATE-----
+  ```
 
-> Note: 
-> - The thresholds are **OR** condition, if one of them exceeds the threshold, then mark the host as status down.
-> - The Host needs remote server have the following command: `top`, `df`, `free`, `awk`, `grep`, `tr`, and `hostname` (check the [source code](./blob/work/probe/host/host.go) to see how it works).
-> - The disk usage only check the root disk.
+### 3.6 Host Resource Usage Probe Configuration
+
+The host resource usage probe allows for collecting information and alerting when certain resource utilization thresholds are exceeded.
+
+The resources currently monitored include CPU, memory and disk utilization. The probe status is considered as `down` when any value exceeds its defined threshold.
+
+> **Note**:
+> - The host running easerprobe needs the following commands to be installed on the remote system that will be monitored: `top`, `df`, `free`, `awk`, `grep`, `tr`, and `hostname` (check the [source code](./probe/host/host.go) for more details on this works and/or modify its behavior).
+> - The disk usage check is limited to the root filesystem only with the following command `df -h /`.
 
 ```yaml
 host:
@@ -414,19 +749,24 @@ host:
       bastion: aws #  <-- bastion server id ------─┘
       host: ubuntu@172.20.2.202:22
       key: /path/to/server.pem
+      disks: # [optional] Check multiple disks. if not present, only check `/` by default
+        - /
+        - /data
       threshold:
         cpu: 0.80  # cpu usage  80%
         mem: 0.70  # memory usage 70%
         disk: 0.90  # disk usage 90%
 
-    # Using the default threshold 
+    # Using the default threshold
     # cpu 80%, mem 80% and disk 95%
     - name : My VPS
       host: user@example.com:22
       key: /Users/user/.ssh/id_rsa
 ```
 
-### 3.6 Native Client Probe
+### 3.7 Native Client Probe Configuration
+
+Native Client probe uses the native GO SDK to communicate with the remote endpoints. Additionally to simple connectivity checks, you can also define key and data validity checks for EaseProbe, it will query for the given keys and verify the data stored on each service.
 
 ```YAML
 # Native Client Probe
@@ -435,7 +775,9 @@ client:
     driver: "redis"  # driver is redis
     host: "localhost:6379"  # server and port
     password: "abc123" # password
-    # mTLS
+    data:         # Optional
+      key: val    # Check that `key` exists and its value is `val`
+    # mTLS - Optional
     ca: /path/to/file.ca
     cert: /path/to/file.crt
     key: /path/to/file.key
@@ -445,6 +787,16 @@ client:
     host: "localhost:3306"
     username: "root"
     password: "pass"
+    data: # Optional, check the specific column value in the table
+      #  Usage: "database:table:column:primary_key:value" : "expected_value"
+      #         transfer to : "SELECT column FROM database.table WHERE primary_key = value"
+      #         the `value` for `primary_key` must be int
+      "test:product:name:id:1" : "EaseProbe" # select name from test.product where id = 1
+      "test:employee:age:id:2" : 45          # select age from test.employee where id = 2
+    # mTLS - Optional
+    ca: /path/to/file.ca
+    cert: /path/to/file.crt
+    key: /path/to/file.key
 
   - name: MongoDB Native Client (local)
     driver: "mongo"
@@ -452,11 +804,23 @@ client:
     username: "admin"
     password: "abc123"
     timeout: 5s
+    data: # Optional, find the specific value in the table
+      #  Usage: "database:collection" : "{JSON}"
+      "test:employee" : '{"name":"Hao Chen"}' # find the employee with name "Hao Chen"
+      "test:product" : '{"name":"EaseProbe"}' # find the product with name "EaseProbe"
+
+  - name: Memcache Native Client (local)
+    driver: "memcache"
+    host: "localhost:11211"
+    timeout: 5s
+    data:         # Optional
+      key: val    # Check that key exists and its value is val
+      "namespace:key": val # Namespaced keys enclosed in "
 
   - name: Kafka Native Client (local)
     driver: "kafka"
     host: "localhost:9093"
-    # mTLS
+    # mTLS - Optional
     ca: /path/to/file.ca
     cert: /path/to/file.crt
     key: /path/to/file.key
@@ -466,19 +830,31 @@ client:
     host: "localhost:5432"
     username: "postgres"
     password: "pass"
+    data: # Optional, check the specific column value in the table
+      #  Usage: "database:table:column:primary_key:value" : "expected_value"
+      #         transfer to : "SELECT column FROM table WHERE primary_key = value"
+      #         the `value` for `primary_key` must be int
+      "test:product:name:id:1" : "EaseProbe" # select name from product where id = 1
+      "test:employee:age:id:2" : 45          # select age from employee where id = 2
+    # mTLS - Optional
+    ca: /path/to/file.ca
+    cert: /path/to/file.crt
+    key: /path/to/file.key
 
   - name: Zookeeper Native Client (local)
     driver: "zookeeper"
     host: "localhost:2181"
     timeout: 5s
-    # mTLS
+    data: # Optional, check the specific value in the path
+      "/path/to/key": "value" # Check that the value of the `/path/to/key` is "value"
+    # mTLS - Optional
     ca: /path/to/file.ca
     cert: /path/to/file.crt
     key: /path/to/file.key
 ```
 
 
-### 3.7 Notification Configuration
+### 3.8 Notification Configuration
 
 ```YAML
 # Notification Configuration
@@ -513,6 +889,7 @@ notify:
       username: user@example.com
       password: ********
       to: "user1@example.com;user2@example.com"
+      from: "from@example.com" # Optional
       # dry: true # dry notification, print the Email HTML in log(STDOUT)
   # Notify to AWS Simple Notification Service
   aws_sns:
@@ -540,30 +917,84 @@ notify:
     - name: "Local Log"
       file: "/tmp/easeprobe.log"
       dry: true
+    - name: Remote syslog # syslog (!!! Not For Windows !!!)
+      file: syslog # <-- must be "syslog" keyword
+      host: 127.0.0.1:514 # remote syslog server - optional
+      network: udp #remote syslog network [tcp, udp] - optional
+  # Notify by sms using yunpian  https://www.yunpian.com/official/document/sms/zh_cn/domestic_single_send
+  sms:
+    - name: "sms alert service - yunpian"
+      provider: "yunpian"
+      key: xxxxxxxxxxxx # yunpian apikey
+      mobile: 123456789,987654321 # mobile phone number, multi phone number joint by `,`
+      sign: "xxxxx" # get this from yunpian
+
+  # EaseProbe set the following environment variables
+  #  - EASEPROBE_TYPE: "Status" or "SLA"
+  #  - EASEPROBE_NAME: probe name
+  #  - EASEPROBE_STATUS: "up" or "down"
+  #  - EASEPROBE_RTT: round trip time in milliseconds
+  #  - EASEPROBE_TIMESTAMP: timestamp of probe time
+  #  - EASEPROBE_MESSAGE: probe message
+  # and offer two formats of string
+  #  - EASEPROBE_JSON: the JSON format
+  #  - EASEPROBE_CSV: the CSV format
+  # The CVS format would be set for STDIN for the shell command.
+  # (see the example: resources/scripts/notify/notify.sh)
+  shell:
+    - name: "shell alert service"
+      cmd: "/bin/bash"
+      args:
+        - "-c"
+        - "/path/to/script.sh"
+      clean_env: true # Do not pass the OS environment variables to the command
+                      # default: false
+      env: # set the env to the notification command
+        - "EASEPROBE=1"
+        - "KEY=Value"
 ```
 
-**Notes**: All of the notifications can have the following optional configuration.
+**Note**: All of the notifications support the following optional configuration parameters.
 
 ```YAML
   dry: true # dry notification, print the Discord JSON in log(STDOUT)
   timeout: 20s # the timeout send out notification, default: 30s
-  retry: # somehow the network is not good needs to retry.
+  retry: # somehow the network is not good and needs to retry.
     times: 3 # default: 3
     interval: 10s # default: 5s
 ```
 
 
-### 3.8 Global Setting Configuration
+### 3.9 Global Setting Configuration
 
 ```YAML
 # Global settings for all probes and notifiers.
 settings:
+
+  # The customized name and icon
+  name: "EaseProbe" # the name of the probe: default: "EaseProbe"
+  icon: "https://path/to/icon.png" # the icon of the probe. default: "https://megaease.com/favicon.png"
+  # Daemon settings
+
+  # pid file path,  default: $CWD/easeprobe.pid,
+  # if set to "", will not create pid file.
+  pid: /var/run/easeprobe.pid
 
   # A HTTP Server configuration
   http:
     ip: 127.0.0.1 # the IP address of the server. default:"0.0.0.0"
     port: 8181 # the port of the server. default: 8181
     refresh: 5s # the auto-refresh interval of the server. default: the minimum value of the probes' interval.
+    log:
+      file: /path/to/access.log # access log file. default: Stdout
+      # Log Rotate Configuration (optional)
+      self_rotate: true # true: self rotate log file. default: true
+                        # false: managed by outside  (e.g logrotate)
+                        #        the blow settings will be ignored.
+      size: 10 # max of access log file size. default: 10m
+      age: 7 #  max of access log file age. default: 7 days
+      backups: 5 # max of access log file backups. default: 5
+      compress: true # compress the access log file. default: true
 
   # SLA Report schedule
   sla:
@@ -575,6 +1006,13 @@ settings:
     # - true: send the SLA report every minute
     # - false: send the SLA report in schedule
     debug: false
+    # SLA data persistence file path.
+    # The default location is `$CWD/data/data.yaml`
+    data: /path/to/data/file.yaml
+    # Use the following to disable SLA data persistence
+    # data: "-"
+    backups: 5 # max of SLA data file backups. default: 5
+               # if set to a negative value, keep all backup files
 
   notify:
     # dry: true # Global settings for dry run
@@ -585,12 +1023,21 @@ settings:
   probe:
     timeout: 30s # the time out for all probes
     interval: 1m # probe every minute for all probes
-  # easeprobe program running log file.
-  logfile: "test.log"
 
-  # Log Level Configuration
-  # can be: panic, fatal, error, warn, info, debug.
-  loglevel: "debug"
+  # easeprobe program running log file.
+  log:
+    file: "/path/to/easeprobe.log" # default: stdout
+    # Log Level Configuration
+    # can be: panic, fatal, error, warn, info, debug.
+    level: "debug"
+    # Log Rotate Configuration (optional)
+    self_rotate: true # true: self rotate log file. default: true
+                        # false: managed by outside  (e.g logrotate)
+                        #        the blow settings will be ignored.
+    size: 10 # max of access log file size. default: 10m
+    age: 7 #  max of access log file age. default: 7 days
+    backups: 5 # max of access log file backups. default: 5
+    compress: true # compress the access log file. default: true
 
   # Date format
   # Date
@@ -611,15 +1058,26 @@ settings:
   #   - 02 Jan 06 15:04 -0700             (with numeric zone)
   #   - Mon, 02 Jan 2006 15:04:05 MST     (RFC 1123)
   #   - Mon, 02 Jan 2006 15:04:05 -0700   (with numeric zone)
-  timeformat: "2006-01-02 15:04:05 UTC"
-
+  timeformat: "2006-01-02 15:04:05 Z07:00"
+  # check the following link to see the time zone list
+  # https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+  timezone: "America/New_York" #  default: UTC
 ```
 
-## 4. Community
+## 4. Benchmark
 
-- [Join Slack Workspace](https://join.slack.com/t/openmegaease/shared_invite/zt-upo7v306-lYPHvVwKnvwlqR0Zl2vveA) for requirement, issue and development.
+Refer to - [Benchmark Report](./docs/Benchmark.md)
+
+## 5. Contributing
+
+If you're interested in contributing to the project, please spare a moment to read our [CONTRIBUTING Guide](./docs/CONTRIBUTING.md)
+
+
+## 6. Community
+
+- [Join Slack Workspace](https://join.slack.com/t/openmegaease/shared_invite/zt-upo7v306-lYPHvVwKnvwlqR0Zl2vveA) for requirement, issue, and development.
 - [MegaEase on Twitter](https://twitter.com/megaease)
 
-## 5. License
+## 7. License
 
 EaseProbe is under the Apache 2.0 license. See the [LICENSE](./LICENSE) file for details.

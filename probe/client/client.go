@@ -18,10 +18,13 @@
 package client
 
 import (
+	"fmt"
+
 	"github.com/megaease/easeprobe/global"
 	"github.com/megaease/easeprobe/probe"
 	"github.com/megaease/easeprobe/probe/client/conf"
 	"github.com/megaease/easeprobe/probe/client/kafka"
+	"github.com/megaease/easeprobe/probe/client/memcache"
 	"github.com/megaease/easeprobe/probe/client/mongo"
 	"github.com/megaease/easeprobe/probe/client/mysql"
 	"github.com/megaease/easeprobe/probe/client/postgres"
@@ -43,31 +46,38 @@ func (c *Client) Config(gConf global.ProbeSettings) error {
 	kind := "client"
 	tag := c.DriverType.String()
 	name := c.ProbeName
-	c.DefaultOptions.Config(gConf, kind, tag, name, c.Host, c.DoProbe)
-	c.configClientDriver()
-
+	c.DefaultProbe.Config(gConf, kind, tag, name, c.Host, c.DoProbe)
+	if err := c.Check(); err != nil {
+		return err
+	}
+	if err := c.configClientDriver(); err != nil {
+		return err
+	}
 	log.Debugf("[%s] configuration: %+v, %+v", c.ProbeKind, c, c.Result())
 	return nil
 }
 
-func (c *Client) configClientDriver() {
+func (c *Client) configClientDriver() (err error) {
 	switch c.DriverType {
 	case conf.MySQL:
-		c.client = mysql.New(c.Options)
+		c.client, err = mysql.New(c.Options)
 	case conf.Redis:
-		c.client = redis.New(c.Options)
+		c.client, err = redis.New(c.Options)
+	case conf.Memcache:
+		c.client, err = memcache.New(c.Options)
 	case conf.Mongo:
-		c.client = mongo.New(c.Options)
+		c.client, err = mongo.New(c.Options)
 	case conf.Kafka:
-		c.client = kafka.New(c.Options)
+		c.client, err = kafka.New(c.Options)
 	case conf.PostgreSQL:
-		c.client = postgres.New(c.Options)
+		c.client, err = postgres.New(c.Options)
 	case conf.Zookeeper:
-		c.client = zookeeper.New(c.Options)
+		c.client, err = zookeeper.New(c.Options)
 	default:
 		c.DriverType = conf.Unknown
+		err = fmt.Errorf("Unknown Driver Type")
 	}
-
+	return
 }
 
 // DoProbe return the checking result

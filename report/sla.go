@@ -18,6 +18,8 @@
 package report
 
 import (
+	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -37,9 +39,9 @@ type Availability struct {
 
 // Summary is the Summary JSON structure
 type Summary struct {
-	Total int32 `json:"total"`
-	Up    int32 `json:"up"`
-	Down  int32 `json:"down"`
+	Total int64 `json:"total"`
+	Up    int64 `json:"up"`
+	Down  int64 `json:"down"`
 }
 
 // LatestProbe is the LatestProbe JSON structure
@@ -66,7 +68,7 @@ func SLAObject(r *probe.Result) SLA {
 		Availability: Availability{
 			UpTime:   r.Stat.UpTime,
 			DownTime: r.Stat.DownTime,
-			SLA:      SLAPercent(r),
+			SLA:      r.SLAPercent(),
 		},
 		ProbeTimes: Summary{
 			Total: r.Stat.Total,
@@ -80,19 +82,6 @@ func SLAObject(r *probe.Result) SLA {
 		},
 	}
 
-}
-
-// SLAPercent calculate the SLAPercent
-func SLAPercent(r *probe.Result) float64 {
-	uptime := r.Stat.UpTime.Seconds()
-	downtime := r.Stat.DownTime.Seconds()
-	if uptime+downtime <= 0 {
-		if r.Status == probe.StatusUp {
-			return 100
-		}
-		return 0
-	}
-	return uptime / (uptime + downtime) * 100
 }
 
 // SLAJSONSection return the JSON format string to stat
@@ -110,7 +99,8 @@ func SLAJSONSection(r *probe.Result) string {
 func SLAJSON(probers []probe.Prober) string {
 	var sla []SLA
 	for _, p := range probers {
-		sla = append(sla, SLAObject(p.Result()))
+		r := probe.GetResultData(p.Name())
+		sla = append(sla, SLAObject(r))
 	}
 	j, err := json.Marshal(&sla)
 	if err != nil {
@@ -124,9 +114,9 @@ func SLAJSON(probers []probe.Prober) string {
 func SLATextSection(r *probe.Result) string {
 	text := "Name: %s - %s, \n\tAvailability: Up - %s, Down - %s, SLA: %.2f%%\n\tProbe-Times: Total: %d ( %s ), \n\tLatest-Probe:%s - %s, Message:%s"
 	return fmt.Sprintf(text, r.Name, r.Endpoint,
-		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime), SLAPercent(r),
+		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime), r.SLAPercent(),
 		r.Stat.Total, SLAStatusText(r.Stat, Text),
-		time.Now().UTC().Format(r.TimeFormat),
+		FormatTime(r.StartTime),
 		r.Status.Emoji()+" "+r.Status.String(), JSONEscape(r.Message))
 }
 
@@ -134,7 +124,29 @@ func SLATextSection(r *probe.Result) string {
 func SLAText(probers []probe.Prober) string {
 	text := "[Overall SLA Report]\n\n"
 	for _, p := range probers {
-		text += SLATextSection(p.Result()) + "\n\b"
+		r := probe.GetResultData(p.Name())
+		text += SLATextSection(r) + "\n"
+	}
+	return text
+}
+
+// SLALogSection return the Log format string to stat
+func SLALogSection(r *probe.Result) string {
+	text := `name="%s"; endpoint="%s"; up="%s"; down="%s"; sla="%.2f%%"; total="%d(%s)"; latest_time="%s"; latest_status="%s"; message="%s"`
+	return fmt.Sprintf(text, r.Name, r.Endpoint,
+		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime), r.SLAPercent(),
+		r.Stat.Total, SLAStatusText(r.Stat, Log),
+		FormatTime(r.StartTime),
+		r.Status.String(), r.Message)
+}
+
+// SLALog return a full stat report with Log format
+func SLALog(probers []probe.Prober) string {
+	var text string
+	n := len(probers)
+	for i, p := range probers {
+		r := probe.GetResultData(p.Name())
+		text += fmt.Sprintf("SLA-Report-%d-%d %s\n", i+1, n, SLALogSection(r))
 	}
 	return text
 }
@@ -153,9 +165,9 @@ func SLAMarkdownSection(r *probe.Result, f Format) string {
 		"  ```%s```\n"
 
 	return fmt.Sprintf(text, r.Name, r.Endpoint,
-		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime), SLAPercent(r),
+		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime), r.SLAPercent(),
 		r.Stat.Total, SLAStatusText(r.Stat, MarkdownSocial),
-		time.Now().UTC().Format(r.TimeFormat),
+		FormatTime(r.StartTime),
 		r.Status.Emoji()+" "+r.Status.String(), r.Message)
 }
 
@@ -175,8 +187,11 @@ func slaMarkdown(probers []probe.Prober, f Format) string {
 		md = "*Overall SLA Report*\n"
 	}
 	for _, p := range probers {
-		md += SLAMarkdownSection(p.Result(), f)
+		r := probe.GetResultData(p.Name())
+		md += SLAMarkdownSection(r, f)
 	}
+
+	md += "\n> " + global.FooterString() + " at " + FormatTime(time.Now())
 	return md
 }
 
@@ -198,23 +213,36 @@ func SLAHTMLSection(r *probe.Result) string {
 	`
 	return fmt.Sprintf(html, r.Name, r.Endpoint,
 		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime),
-		SLAPercent(r),
+		r.SLAPercent(),
 		r.Stat.Total, SLAStatusText(r.Stat, HTML),
-		time.Now().UTC().Format(r.TimeFormat),
+		FormatTime(r.StartTime),
 		r.Status.Emoji()+" "+r.Status.String(), JSONEscape(r.Message))
 }
 
 // SLAHTML return a full stat report
 func SLAHTML(probers []probe.Prober) string {
+	return SLAHTMLFilter(probers, nil)
+}
+
+// SLAHTMLFilter return a stat report with filter
+func SLAHTMLFilter(probers []probe.Prober, filter *SLAFilter) string {
 	html := HTMLHeader("Overall SLA Report")
 
-	html += `<table style="font-size: 16px; line-height: 20px;">`
-	for _, p := range probers {
-		html += SLAHTMLSection(p.Result())
+	if filter == nil {
+		filter = NewEmptyFilter()
 	}
-	html += `</table>`
 
-	html += HTMLFooter()
+	probers = filter.Filter(probers)
+	table := `<table style="font-size: 16px; line-height: 20px;">`
+	for _, p := range probers {
+		r := probe.GetResultData(p.Name())
+		table += SLAHTMLSection(r)
+	}
+	table += `</table>`
+
+	html = html + filter.HTML() + table
+
+	html += HTMLFooter(FormatTime(time.Now()))
 	return html
 }
 
@@ -231,7 +259,7 @@ func SLASlackSection(r *probe.Result) string {
 		`\n>\t%s"` + `
 			}`
 
-	t := SlackTimeFormation(r.StartTime, "", r.TimeFormat)
+	t := SlackTimeFormation(r.StartTime, "", global.GetTimeFormat())
 
 	message := JSONEscape(r.Message)
 	if r.Status != probe.StatusUp {
@@ -239,19 +267,14 @@ func SLASlackSection(r *probe.Result) string {
 	}
 
 	return fmt.Sprintf(json, r.Name, JSONEscape(r.Endpoint),
-		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime), SLAPercent(r),
+		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime), r.SLAPercent(),
 		r.Stat.Total, SLAStatusText(r.Stat, MarkdownSocial),
 		t, r.Status.Emoji()+" "+r.Status.String(), message)
 }
 
 // SLASlack generate all probes stat message to slack block string
 func SLASlack(probers []probe.Prober) string {
-	sla := 0.0
-	for _, p := range probers {
-		sla += SLAPercent(p.Result())
-	}
-	sla /= float64(len(probers))
-	summary := fmt.Sprintf("Total %d Services, Average %.2f%% SLA", len(probers), sla)
+	summary := SLASummary(probers)
 	json := `{
 		"channel": "Report",
 		"text": "Overall SLA Report - ` + summary + ` ",
@@ -287,9 +310,11 @@ func SLASlack(probers []probe.Prober) string {
 		}
 		json += "," + sectionHead
 		for i := start; i < end-1; i++ {
-			json += SLASlackSection(probers[i].Result()) + ","
+			r := probe.GetResultData(probers[i].Name())
+			json += SLASlackSection(r) + ","
 		}
-		json += SLASlackSection(probers[end-1].Result())
+		r := probe.GetResultData(probers[end-1].Name())
+		json += SLASlackSection(r)
 		json += sectionFoot
 	}
 
@@ -299,21 +324,17 @@ func SLASlack(probers []probe.Prober) string {
 		"elements": [
 			{
 				"type": "image",
-				"image_url": "` + global.Icon + `",
+				"image_url": "` + global.GetEaseProbe().IconURL + `",
 				"alt_text": "` + global.OrgProg + `"
 			},
 			{
 				"type": "mrkdwn",
-				"text": "` + global.Prog + ` %s"
+				"text": "` + global.FooterString() + ` %s"
 			}
 		]
 	}`
 
-	timeFmt := "2006-01-02 15:04:05"
-	if len(probers) > 0 {
-		timeFmt = probers[len(probers)-1].Result().TimeFormat
-	}
-	time := SlackTimeFormation(time.Now(), " reported at ", timeFmt)
+	time := SlackTimeFormation(time.Now(), " reported at ", global.GetTimeFormat())
 	json += fmt.Sprintf(context, time)
 
 	json += `]}`
@@ -332,6 +353,8 @@ func SLAStatusText(s probe.Stat, t Format) string {
 		format = "**%s** : `%d` \t"
 	case HTML:
 		format = "<b>%s</b> : %d \t"
+	case Log:
+		format = "%s:%d "
 	}
 	for k, v := range s.Status {
 		status += fmt.Sprintf(format, k.String(), v)
@@ -352,9 +375,9 @@ func SLALarkSection(r *probe.Result) string {
 		}
 	},`
 	return fmt.Sprintf(text, r.Name, r.Endpoint,
-		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime), SLAPercent(r),
+		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime), r.SLAPercent(),
 		r.Stat.Total, SLAStatusText(r.Stat, Lark),
-		time.Now().UTC().Format(r.TimeFormat),
+		FormatTime(r.StartTime),
 		r.Status.Emoji()+" "+r.Status.String(), JSONEscape(r.Message))
 }
 
@@ -382,7 +405,7 @@ func SLALark(probers []probe.Prober) string {
 					"elements": [
 						{
 							"tag": "plain_text",
-							"content": global.Prog 
+							"content": "` + global.FooterString() + `"
 						}
 					]
 				}
@@ -393,11 +416,79 @@ func SLALark(probers []probe.Prober) string {
 	title := "Overall SLA Report"
 	sections := []string{}
 	for _, p := range probers {
-		sections = append(sections, SLALarkSection(p.Result()))
+		r := probe.GetResultData(p.Name())
+		sections = append(sections, SLALarkSection(r))
 	}
 
 	elements := strings.Join(sections, "")
 	s := fmt.Sprintf(json, title, elements)
 	fmt.Printf("SLA: %s\n", s)
 	return s
+}
+
+// SLASummary return a summary stat report
+func SLASummary(probers []probe.Prober) string {
+	sla := 0.0
+	for _, p := range probers {
+		r := probe.GetResultData(p.Name())
+		sla += r.SLAPercent()
+	}
+	sla /= float64(len(probers))
+	summary := fmt.Sprintf("Total %d Services, Average %.2f%% SLA", len(probers), sla)
+	summary += "\n" + global.FooterString()
+	return summary
+}
+
+// SLACSVSection set the CSV format for SLA
+func SLACSVSection(r *probe.Result) []string {
+	return []string{
+		// Name, Endpoint,
+		r.Name, r.Endpoint,
+		// UpTime, DownTime, SLA
+		DurationStr(r.Stat.UpTime), DurationStr(r.Stat.DownTime), fmt.Sprintf("%.2f%%", r.SLAPercent()),
+		// ProbeSummary - Total( Up, Down)
+		fmt.Sprintf("%d(%s)", r.Stat.Total, SLAStatusText(r.Stat, Text)),
+		// LatestProbe, LatestStatus
+		FormatTime(r.StartTime), r.Status.String(),
+		// Message
+		r.Message,
+	}
+}
+
+// SLACSV return a full stat report with CSV format
+func SLACSV(probers []probe.Prober) string {
+	data := [][]string{
+		{"Name", "Endpoint", "UpTime", "DownTime", "SLA", "ProbeSummary", "LatestProbe", "LatestStatus", "Message"},
+	}
+
+	for _, p := range probers {
+		r := probe.GetResultData(p.Name())
+		data = append(data, SLACSVSection(r))
+	}
+
+	buf := new(bytes.Buffer)
+	w := csv.NewWriter(buf)
+
+	if err := w.WriteAll(data); err != nil {
+		log.Errorf("SLACSV(): Failed to write to csv buffer: %v", err)
+		return ""
+	}
+
+	return buf.String()
+}
+
+// SLAShell set the environment for SLA
+func SLAShell(probers []probe.Prober) string {
+	env := make(map[string]string)
+
+	env["EASEPROBE_TYPE"] = "SLA"
+	env["EASEPROBE_JSON"] = SLAJSON(probers)
+	env["EASEPROBE_CSV"] = SLACSV(probers)
+
+	buf, err := json.Marshal(env)
+	if err != nil {
+		log.Errorf("SLAShell(): Failed to marshal env to json: %s", err)
+		return ""
+	}
+	return string(buf)
 }

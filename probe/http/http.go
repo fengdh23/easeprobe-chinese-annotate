@@ -19,31 +19,41 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/megaease/easeprobe/global"
+	"github.com/megaease/easeprobe/probe"
 	"github.com/megaease/easeprobe/probe/base"
+	"github.com/prometheus/client_golang/prometheus"
+
 	log "github.com/sirupsen/logrus"
 )
 
 // HTTP implements a config for HTTP.
 type HTTP struct {
-	base.DefaultOptions `yaml:",inline"`
-	URL                 string            `yaml:"url"`
-	ContentEncoding     string            `yaml:"content_encoding,omitempty"`
-	Method              string            `yaml:"method,omitempty"`
-	Headers             map[string]string `yaml:"headers,omitempty"`
-	Body                string            `yaml:"body,omitempty"`
+	base.DefaultProbe `yaml:",inline"`
+	URL               string            `yaml:"url"`
+	ContentEncoding   string            `yaml:"content_encoding,omitempty"`
+	Method            string            `yaml:"method,omitempty"`
+	Headers           map[string]string `yaml:"headers,omitempty"`
+	Body              string            `yaml:"body,omitempty"`
+
+	// Output Text Checker
+	probe.TextChecker `yaml:",inline"`
 
 	// Option - HTTP Basic Auth Credentials
 	User string `yaml:"username,omitempty"`
 	Pass string `yaml:"password,omitempty"`
 
-	// Option - Prefered HTTP response code ranges, only HTTP standard codes(smaller than 500) are supported;
+	// Option - Preferred HTTP response code ranges, only HTTP standard codes(smaller than 500) are supported;
 	// If no set, default is [0, 499].
 	SuccessCode [][]int `yaml:"success_code,omitempty"`
 
@@ -51,6 +61,10 @@ type HTTP struct {
 	global.TLS `yaml:",inline"`
 
 	client *http.Client `yaml:"-"`
+
+	traceStats *TraceStats `yaml:"-"`
+
+	metrics *metrics `yaml:"-"`
 }
 
 func checkHTTPMethod(m string) bool {
@@ -68,25 +82,44 @@ func (h *HTTP) Config(gConf global.ProbeSettings) error {
 	kind := "http"
 	tag := ""
 	name := h.ProbeName
-	h.DefaultOptions.Config(gConf, kind, tag, name, h.URL, h.DoProbe)
+	h.DefaultProbe.Config(gConf, kind, tag, name, h.URL, h.DoProbe)
 
 	if _, err := url.ParseRequestURI(h.URL); err != nil {
-		log.Errorf("URL is not valid - %+v url=%+v", err)
+		log.Errorf("[%s / %s] URL is not valid - %+v url=%+v", h.ProbeKind, h.ProbeName, err, h.URL)
 		return err
 	}
 
 	tls, err := h.TLS.Config()
 	if err != nil {
-		log.Errorf("TLS configuration error - %s", err)
+		log.Errorf("[%s / %s] TLS configuration error - %s", h.ProbeKind, h.ProbeName, err)
 		return err
 	}
+
+	// security check
+	log.Debugf("[%s / %s] the security checks %s", h.ProbeKind, h.ProbeName, strconv.FormatBool(h.Insecure))
 
 	h.client = &http.Client{
 		Timeout: h.Timeout(),
 		Transport: &http.Transport{
-			TLSClientConfig: tls,
+			TLSClientConfig:   tls,
+			DisableKeepAlives: true,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				d := net.Dialer{Timeout: h.Timeout()}
+				conn, err := d.DialContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				tcpConn, ok := conn.(*net.TCPConn)
+				if ok {
+					log.Debugf("[%s / %s] dial %s:%s", h.ProbeKind, h.ProbeName, network, addr)
+					tcpConn.SetLinger(0)
+					return tcpConn, nil
+				}
+				return conn, nil
+			},
 		},
 	}
+
 	if !checkHTTPMethod(h.Method) {
 		h.Method = "GET"
 	}
@@ -94,7 +127,7 @@ func (h *HTTP) Config(gConf global.ProbeSettings) error {
 	var codeRange [][]int
 	for _, r := range h.SuccessCode {
 		if len(r) != 2 {
-			log.Warnf("HTTP Success Code range is not valid - %v, skip", r)
+			log.Warnf("[%s/ %s] HTTP Success Code range is not valid - %v, skip", h.ProbeKind, h.ProbeName, r)
 			continue
 		}
 		codeRange = append(codeRange, []int{r[0], r[1]})
@@ -104,7 +137,13 @@ func (h *HTTP) Config(gConf global.ProbeSettings) error {
 	}
 	h.SuccessCode = codeRange
 
-	log.Debugf("[%s] configuration: %+v, %+v", h.ProbeKind, h, h.Result())
+	if err := h.TextChecker.Config(); err != nil {
+		return err
+	}
+
+	h.metrics = newMetrics(kind, tag)
+
+	log.Debugf("[%s / %s] configuration: %+v", h.ProbeKind, h.ProbeName, h)
 	return nil
 }
 
@@ -128,9 +167,19 @@ func (h *HTTP) DoProbe() (bool, string) {
 	req.Close = true
 
 	req.Header.Set("User-Agent", global.OrgProgVer)
+
+	// Tracing HTTP request
+	// set the http client trace
+	h.traceStats = NewTraceStats(h.ProbeKind, "TRACE", h.ProbeName)
+	clientTraceCtx := httptrace.WithClientTrace(req.Context(), h.traceStats.clientTrace)
+	req = req.WithContext(clientTraceCtx)
+
 	resp, err := h.client.Do(req)
+	h.traceStats.Done()
+
+	h.ExportMetrics(resp)
 	if err != nil {
-		log.Errorf("error making get request: %v", err)
+		log.Errorf("[%s / %s] error making get request: %v", h.ProbeKind, h.ProbeName, err)
 		return false, fmt.Sprintf("Error: %v", err)
 	}
 	// Read the response body
@@ -152,5 +201,68 @@ func (h *HTTP) DoProbe() (bool, string) {
 		return false, fmt.Sprintf("HTTP Status Code is %d. It missed in %v", resp.StatusCode, h.SuccessCode)
 	}
 
-	return true, fmt.Sprintf("HTTP Status Code is %d", resp.StatusCode)
+	message := fmt.Sprintf("HTTP Status Code is %d", resp.StatusCode)
+
+	log.Debugf("[%s / %s] - %s", h.ProbeKind, h.ProbeName, h.TextChecker.String())
+	if err := h.Check(string(response)); err != nil {
+		log.Errorf("[%s / %s] - %v", h.ProbeKind, h.ProbeName, err)
+		message += fmt.Sprintf(". Error: %v", err)
+		return false, message
+	}
+
+	return true, message
+}
+
+// ExportMetrics export HTTP metrics
+func (h *HTTP) ExportMetrics(resp *http.Response) {
+	code := 0 // no response
+	len := 0
+	if resp != nil {
+		code = resp.StatusCode
+		len = int(resp.ContentLength)
+	}
+	h.metrics.StatusCode.With(prometheus.Labels{
+		"name":   h.ProbeName,
+		"status": fmt.Sprintf("%d", code),
+	}).Inc()
+
+	h.metrics.ContentLen.With(prometheus.Labels{
+		"name":   h.ProbeName,
+		"status": fmt.Sprintf("%d", code),
+	}).Set(float64(len))
+
+	h.metrics.DNSDuration.With(prometheus.Labels{
+		"name":   h.ProbeName,
+		"status": fmt.Sprintf("%d", code),
+	}).Set(toMS(h.traceStats.dnsTook))
+
+	h.metrics.ConnectDuration.With(prometheus.Labels{
+		"name":   h.ProbeName,
+		"status": fmt.Sprintf("%d", code),
+	}).Set(toMS(h.traceStats.connTook))
+
+	h.metrics.TLSDuration.With(prometheus.Labels{
+		"name":   h.ProbeName,
+		"status": fmt.Sprintf("%d", code),
+	}).Set(toMS(h.traceStats.tlsTook))
+
+	h.metrics.SendDuration.With(prometheus.Labels{
+		"name":   h.ProbeName,
+		"status": fmt.Sprintf("%d", code),
+	}).Set(toMS(h.traceStats.sendTook))
+
+	h.metrics.WaitDuration.With(prometheus.Labels{
+		"name":   h.ProbeName,
+		"status": fmt.Sprintf("%d", code),
+	}).Set(toMS(h.traceStats.waitTook))
+
+	h.metrics.TransferDuration.With(prometheus.Labels{
+		"name":   h.ProbeName,
+		"status": fmt.Sprintf("%d", code),
+	}).Set(toMS(h.traceStats.transferTook))
+
+	h.metrics.TotalDuration.With(prometheus.Labels{
+		"name":   h.ProbeName,
+		"status": fmt.Sprintf("%d", code),
+	}).Set(toMS(h.traceStats.totalTook))
 }

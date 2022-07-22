@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/megaease/easeprobe/global"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -64,7 +65,6 @@ func HTMLHeader(title string) string {
 			color: #ff9;
 			text-decoration: none;
 		  }
-		  
 		  .head a:hover, .head a:active {
 			text-decoration: underline;
 		  }
@@ -87,8 +87,11 @@ func HTMLHeader(title string) string {
 }
 
 // HTMLFooter return the HTML footer
-func HTMLFooter() string {
+func HTMLFooter(time string) string {
+	footer := "<img src=\"" + global.GetEaseProbe().IconURL + "\" width=16 height=16> "
+	footer += global.FooterString() + " at " + time
 	return `
+	<p>` + footer + `</p>
 	</body>
 	</html>`
 }
@@ -129,4 +132,11 @@ func JSONEscape(str string) string {
 	}
 	s := string(b)
 	return s[1 : len(s)-1]
+}
+
+// FormatTime format the time with time zone and time format
+func FormatTime(t time.Time) string {
+	tf := global.GetTimeFormat()
+	tz := global.GetTimeLocation()
+	return t.In(tz).Format(tf)
 }

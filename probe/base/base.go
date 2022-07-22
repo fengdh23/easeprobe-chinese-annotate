@@ -23,51 +23,65 @@ import (
 
 	"github.com/megaease/easeprobe/global"
 	"github.com/megaease/easeprobe/probe"
+	"github.com/prometheus/client_golang/prometheus"
 
 	log "github.com/sirupsen/logrus"
+)
+
+// Probe Simple Status
+const (
+	ServiceUp   int = 1
+	ServiceDown int = 0
 )
 
 // ProbeFuncType is the probe function type
 type ProbeFuncType func() (bool, string)
 
-// DefaultOptions is the default options for all probe
-type DefaultOptions struct {
+// DefaultProbe is the default options for all probe
+type DefaultProbe struct {
 	ProbeKind         string        `yaml:"-"`
 	ProbeTag          string        `yaml:"-"`
 	ProbeName         string        `yaml:"name"`
+	ProbeChannels     []string      `yaml:"channels"`
 	ProbeTimeout      time.Duration `yaml:"timeout,omitempty"`
 	ProbeTimeInterval time.Duration `yaml:"interval,omitempty"`
 	ProbeFunc         ProbeFuncType `yaml:"-"`
 	ProbeResult       *probe.Result `yaml:"-"`
+	metrics           *metrics      `yaml:"-"`
 }
 
 // Kind return the probe kind
-func (d *DefaultOptions) Kind() string {
+func (d *DefaultProbe) Kind() string {
 	return d.ProbeKind
 }
 
 // Name return the probe name
-func (d *DefaultOptions) Name() string {
+func (d *DefaultProbe) Name() string {
 	return d.ProbeName
 }
 
+// Channels return the probe channels
+func (d *DefaultProbe) Channels() []string {
+	return d.ProbeChannels
+}
+
 // Timeout get the probe timeout
-func (d *DefaultOptions) Timeout() time.Duration {
+func (d *DefaultProbe) Timeout() time.Duration {
 	return d.ProbeTimeout
 }
 
 // Interval get the probe interval
-func (d *DefaultOptions) Interval() time.Duration {
+func (d *DefaultProbe) Interval() time.Duration {
 	return d.ProbeTimeInterval
 }
 
 // Result get the probe result
-func (d *DefaultOptions) Result() *probe.Result {
+func (d *DefaultProbe) Result() *probe.Result {
 	return d.ProbeResult
 }
 
 // Config default config
-func (d *DefaultOptions) Config(gConf global.ProbeSettings,
+func (d *DefaultProbe) Config(gConf global.ProbeSettings,
 	kind, tag, name, endpoint string, fn ProbeFuncType) error {
 
 	d.ProbeKind = kind
@@ -78,33 +92,38 @@ func (d *DefaultOptions) Config(gConf global.ProbeSettings,
 	d.ProbeTimeout = gConf.NormalizeTimeOut(d.ProbeTimeout)
 	d.ProbeTimeInterval = gConf.NormalizeInterval(d.ProbeTimeInterval)
 
-	d.ProbeResult = probe.NewResult()
+	d.ProbeResult = probe.NewResultWithName(name)
 	d.ProbeResult.Name = name
 	d.ProbeResult.Endpoint = endpoint
-	d.ProbeResult.PreStatus = probe.StatusInit
-	d.ProbeResult.TimeFormat = gConf.TimeFormat
+
+	if len(d.ProbeChannels) == 0 {
+		d.ProbeChannels = append(d.ProbeChannels, global.DefaultChannelName)
+	}
 
 	if len(d.ProbeTag) > 0 {
 		log.Infof("Probe [%s / %s] - [%s] base options are configured!", d.ProbeKind, d.ProbeTag, d.ProbeName)
 	} else {
 		log.Infof("Probe [%s] - [%s] base options are configured!", d.ProbeKind, d.ProbeName)
 	}
+
+	d.metrics = newMetrics(kind, tag)
+
 	return nil
 }
 
 // Probe return the checking result
-func (d *DefaultOptions) Probe() probe.Result {
+func (d *DefaultProbe) Probe() probe.Result {
 	if d.ProbeFunc == nil {
 		return *d.ProbeResult
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	d.ProbeResult.StartTime = now
 	d.ProbeResult.StartTimestamp = now.UnixMilli()
 
 	stat, msg := d.ProbeFunc()
 
-	d.ProbeResult.RoundTripTime.Duration = time.Since(now)
+	d.ProbeResult.RoundTripTime = time.Since(now)
 
 	status := probe.StatusUp
 	title := "Success"
@@ -124,18 +143,47 @@ func (d *DefaultOptions) Probe() probe.Result {
 	d.ProbeResult.PreStatus = d.ProbeResult.Status
 	d.ProbeResult.Status = status
 
+	d.ExportMetrics()
+
 	d.DownTimeCalculation(status)
 
 	d.ProbeResult.DoStat(d.Interval())
-	return *d.ProbeResult
+
+	result := d.ProbeResult.Clone()
+	return result
+}
+
+// ExportMetrics export the metrics
+func (d *DefaultProbe) ExportMetrics() {
+	d.metrics.Total.With(prometheus.Labels{
+		"name":   d.ProbeName,
+		"status": d.ProbeResult.Status.String(),
+	}).Inc()
+
+	d.metrics.Duration.With(prometheus.Labels{
+		"name":   d.ProbeName,
+		"status": d.ProbeResult.Status.String(),
+	}).Set(float64(d.ProbeResult.RoundTripTime.Milliseconds()))
+
+	status := ServiceUp // up
+	if d.ProbeResult.Status != probe.StatusUp {
+		status = ServiceDown // down
+	}
+	d.metrics.Status.With(prometheus.Labels{
+		"name": d.ProbeName,
+	}).Set(float64(status))
+
+	d.metrics.SLA.With(prometheus.Labels{
+		"name": d.ProbeName,
+	}).Set(float64(d.ProbeResult.SLAPercent()))
 }
 
 // DownTimeCalculation calculate the down time
-func (d *DefaultOptions) DownTimeCalculation(status probe.Status) {
+func (d *DefaultProbe) DownTimeCalculation(status probe.Status) {
 
 	// Status from UP to DOWN - Failure
 	if d.ProbeResult.PreStatus != probe.StatusDown && status == probe.StatusDown {
-		d.ProbeResult.LatestDownTime = time.Now()
+		d.ProbeResult.LatestDownTime = time.Now().UTC()
 	}
 
 	// Status from DOWN to UP - Recovery

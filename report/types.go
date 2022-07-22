@@ -20,6 +20,7 @@ package report
 import (
 	"strings"
 
+	"github.com/megaease/easeprobe/global"
 	"github.com/megaease/easeprobe/probe"
 )
 
@@ -34,58 +35,44 @@ const (
 	HTML
 	JSON
 	Text
+	Log
 	Slack
 	Discord
 	Lark
+	SMS
+	Shell
 )
+
+var fmtToStr = map[Format]string{
+	Unknown:        "unknown",
+	MarkdownSocial: "markdown-social",
+	Markdown:       "markdown",
+	HTML:           "html",
+	JSON:           "json",
+	Text:           "text",
+	Log:            "log",
+	Slack:          "slack",
+	Discord:        "discord",
+	Lark:           "lark",
+	SMS:            "sms",
+	Shell:          "shell",
+}
+
+var strToFmt = global.ReverseMap(fmtToStr)
 
 // String covert the Format to string
 func (f Format) String() string {
-	switch f {
-	case MarkdownSocial:
-		return "markdown-social"
-	case Markdown:
-		return "markdown"
-	case HTML:
-		return "html"
-	case JSON:
-		return "json"
-	case Slack:
-		return "slack"
-	case Discord:
-		return "discord"
-	case Lark:
-		return "lark"
-	default:
-		return "unknown"
-	}
+	return fmtToStr[f]
 }
 
 // Format covert the string to Format
 func (f *Format) Format(s string) {
-	switch strings.ToLower(s) {
-	case "markdown":
-		*f = Markdown
-	case "markdown-social":
-		*f = MarkdownSocial
-	case "html":
-		*f = HTML
-	case "json":
-		*f = JSON
-	case "slack":
-		*f = Slack
-	case "discrod":
-		*f = Discord
-	case "lark":
-		*f = Lark
-	default:
-		*f = Unknown
-	}
+	*f = strToFmt[strings.ToLower(s)]
 }
 
 // MarshalYAML is marshal the format
-func (f *Format) MarshalYAML() ([]byte, error) {
-	return []byte(f.String()), nil
+func (f Format) MarshalYAML() (interface{}, error) {
+	return f.String(), nil
 }
 
 // UnmarshalYAML is unmarshal the format
@@ -114,10 +101,13 @@ type FormatFuncStruct struct {
 var FormatFuncs = map[Format]FormatFuncStruct{
 	Unknown:        {ToText, SLAText},
 	Text:           {ToText, SLAText},
+	Log:            {ToLog, SLALog},
 	JSON:           {ToJSON, SLAJSON},
 	Markdown:       {ToMarkdown, SLAMarkdown},
 	MarkdownSocial: {ToMarkdownSocial, SLAMarkdownSocial},
 	HTML:           {ToHTML, SLAHTML},
 	Slack:          {ToSlack, SLASlack},
 	Lark:           {ToLark, SLALark},
+	SMS:            {ToText, SLASummary},
+	Shell:          {ToShell, SLAShell},
 }

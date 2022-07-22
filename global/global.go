@@ -22,6 +22,9 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io/ioutil"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -31,18 +34,18 @@ import (
 const (
 	// Org is the organization
 	Org = "MegaEase"
-	// Prog is the program name
-	Prog = "EaseProbe"
+	// DefaultProg is the program name
+	DefaultProg = "EaseProbe"
 	// Ver is the program version
-	Ver = "v1.1.2"
+	Ver = "v1.7.0"
 
 	//OrgProg combine organization and program
-	OrgProg = Org + " " + Prog
+	OrgProg = Org + " " + DefaultProg
 	//OrgProgVer combine organization and program and version
-	OrgProgVer = Org + " " + Prog + "/" + Ver
+	OrgProgVer = Org + " " + DefaultProg + "/" + Ver
 
-	// Icon is the default icon which used in Slack or Discord
-	Icon = "https://megaease.cn/favicon.png"
+	// DefaultIconURL is the default icon which used in Slack or Discord
+	DefaultIconURL = "https://megaease.com/favicon.png"
 )
 
 const (
@@ -50,12 +53,16 @@ const (
 	DefaultRetryTimes = 3
 	// DefaultRetryInterval is 5 seconds
 	DefaultRetryInterval = time.Second * 5
-	// DefaultTimeFormat is "2006-01-02 15:04:05 UTC"
-	DefaultTimeFormat = "2006-01-02 15:04:05 UTC"
+	// DefaultTimeFormat is "2006-01-02 15:04:05 Z0700"
+	DefaultTimeFormat = "2006-01-02 15:04:05 Z0700"
+	// DefaultTimeZone is "UTC"
+	DefaultTimeZone = "UTC"
 	// DefaultProbeInterval is 1 minutes
 	DefaultProbeInterval = time.Second * 60
 	// DefaultTimeOut is 30 seconds
 	DefaultTimeOut = time.Second * 30
+	// DefaultChannelName  is the default wide channel name
+	DefaultChannelName = "__EaseProbe_Channel__"
 )
 
 const (
@@ -63,6 +70,25 @@ const (
 	DefaultHTTPServerIP = "0.0.0.0"
 	// DefaultHTTPServerPort is the default port of the HTTP server
 	DefaultHTTPServerPort = "8181"
+	// DefaultPageSize is the default page size
+	DefaultPageSize = 100
+	// DefaultAccessLogFile is the default access log file name
+	DefaultAccessLogFile = "access.log"
+	// DefaultDataFile is the default data file name
+	DefaultDataFile = "data/data.yaml"
+	// DefaultPIDFile is the default pid file name
+	DefaultPIDFile = "easeprobe.pid"
+)
+
+const (
+	// DefaultMaxLogSize is the default max log size
+	DefaultMaxLogSize = 10 // 10M
+	// DefaultMaxLogAge is the default max log age
+	DefaultMaxLogAge = 7 // 7 days
+	// DefaultMaxBackups is the default backup file number
+	DefaultMaxBackups = 5 // file
+	// DefaultLogCompress is the default compress log
+	DefaultLogCompress = true
 )
 
 // Retry is the settings of retry
@@ -73,9 +99,10 @@ type Retry struct {
 
 // TLS is the configuration for TLS files
 type TLS struct {
-	CA   string `yaml:"ca"`
-	Cert string `yaml:"cert"`
-	Key  string `yaml:"key"`
+	CA       string `yaml:"ca"`
+	Cert     string `yaml:"cert"`
+	Key      string `yaml:"key"`
+	Insecure bool   `yaml:"insecure"`
 }
 
 // The normalize() function logic as below:
@@ -95,9 +122,23 @@ func normalize[T constraints.Ordered](global, local, valid, _default T) T {
 	return local
 }
 
+// ReverseMap just reverse the map from [key, value] to [value, key]
+func ReverseMap[K comparable, V comparable](m map[K]V) map[V]K {
+	n := make(map[V]K, len(m))
+	for k, v := range m {
+		n[v] = k
+	}
+	return n
+}
+
 // Config return a tls.Config object
 func (t *TLS) Config() (*tls.Config, error) {
-	if len(t.CA) <= 0 || len(t.Cert) <= 0 || len(t.Key) <= 0 {
+	if len(t.CA) <= 0 {
+		// the insecure is true but no ca/cert/key, then return a tls config
+		if t.Insecure == true {
+			log.Debug("[TLS] Insecure is true but the CA is empty, return a tls config")
+			return &tls.Config{InsecureSkipVerify: true}, nil
+		}
 		return nil, nil
 	}
 
@@ -108,13 +149,25 @@ func (t *TLS) Config() (*tls.Config, error) {
 	caCertPool := x509.NewCertPool()
 	caCertPool.AppendCertsFromPEM(cert)
 
+	// only have CA file, go TLS
+	if len(t.Cert) <= 0 || len(t.Key) <= 0 {
+		log.Debug("[TLS] Only have CA file, go TLS")
+		return &tls.Config{
+			RootCAs:            caCertPool,
+			InsecureSkipVerify: t.Insecure,
+		}, nil
+	}
+
+	// have both CA and cert/key, go mTLS way
+	log.Debug("[TLS] Have both CA and cert/key, go mTLS way")
 	certificate, err := tls.LoadX509KeyPair(t.Cert, t.Key)
 	if err != nil {
 		return nil, err
 	}
 	return &tls.Config{
-		RootCAs:      caCertPool,
-		Certificates: []tls.Certificate{certificate},
+		RootCAs:            caCertPool,
+		Certificates:       []tls.Certificate{certificate},
+		InsecureSkipVerify: t.Insecure,
 	}, nil
 }
 
@@ -134,4 +187,61 @@ func DoRetry(kind, name, tag string, r Retry, fn func() error) error {
 		}
 	}
 	return fmt.Errorf("[%s / %s / %s] failed after %d retries - %v", kind, name, tag, r.Times, err)
+}
+
+// GetWorkDir return the current working directory
+func GetWorkDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		log.Warnf("Cannot get the current directory: %v, using $HOME directory!", err)
+		dir, err = os.UserHomeDir()
+		if err != nil {
+			log.Warnf("Cannot get the user home directory: %v, using /tmp directory!", err)
+			dir = os.TempDir()
+		}
+	}
+	return dir
+}
+
+// MakeDirectory return the writeable filename
+func MakeDirectory(filename string) string {
+	dir, file := filepath.Split(filename)
+	if len(dir) <= 0 {
+		dir = GetWorkDir()
+	}
+	if len(file) <= 0 {
+		return dir
+	}
+	if strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Warnf("Cannot get the user home directory: %v, using /tmp directory as home", err)
+			home = os.TempDir()
+		}
+		dir = filepath.Join(home, dir[2:])
+	}
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		log.Warnf("Cannot get the absolute path: %v", err)
+		dir = GetWorkDir()
+	}
+
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		err = os.MkdirAll(dir, os.ModePerm)
+		if err != nil {
+			log.Warnf("Cannot create the directory: %v", err)
+			dir = GetWorkDir()
+		}
+	}
+
+	return filepath.Join(dir, file)
+}
+
+// CommandLine will return the whole command line which includes command and all arguments
+func CommandLine(cmd string, args []string) string {
+	result := cmd
+	for _, arg := range args {
+		result += " " + arg
+	}
+	return result
 }

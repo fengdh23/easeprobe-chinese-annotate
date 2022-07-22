@@ -20,12 +20,15 @@ package conf
 import (
 	"io/ioutil"
 	httpClient "net/http"
+	netUrl "net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/megaease/easeprobe/channel"
 	"github.com/megaease/easeprobe/global"
 	"github.com/megaease/easeprobe/notify"
 	"github.com/megaease/easeprobe/probe"
@@ -35,6 +38,8 @@ import (
 	"github.com/megaease/easeprobe/probe/shell"
 	"github.com/megaease/easeprobe/probe/ssh"
 	"github.com/megaease/easeprobe/probe/tcp"
+	"github.com/megaease/easeprobe/probe/tls"
+
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -44,34 +49,6 @@ var config *Conf
 // Get return the global configuration
 func Get() *Conf {
 	return config
-}
-
-// LogLevel is the log level
-type LogLevel struct {
-	Level log.Level
-}
-
-// UnmarshalYAML is unmarshal the debug level
-func (l *LogLevel) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var level string
-	if err := unmarshal(&level); err != nil {
-		return err
-	}
-	switch strings.ToLower(level) {
-	case "debug":
-		l.Level = log.DebugLevel
-	case "info":
-		l.Level = log.InfoLevel
-	case "warn":
-		l.Level = log.WarnLevel
-	case "error":
-		l.Level = log.ErrorLevel
-	case "fatal":
-		l.Level = log.FatalLevel
-	case "panic":
-		l.Level = log.PanicLevel
-	}
-	return nil
 }
 
 // Schedule is the schedule.
@@ -124,6 +101,9 @@ type SLAReport struct {
 	Schedule Schedule `yaml:"schedule"`
 	Time     string   `yaml:"time"`
 	Debug    bool     `yaml:"debug"`
+	DataFile string   `yaml:"data"`
+	Backups  int      `yaml:"backups"`
+	Channels []string `yaml:"channels"`
 }
 
 // HTTPServer is the settings of http server
@@ -131,34 +111,51 @@ type HTTPServer struct {
 	IP              string        `yaml:"ip"`
 	Port            string        `yaml:"port"`
 	AutoRefreshTime time.Duration `yaml:"refresh"`
+	AccessLog       Log           `yaml:"log"`
 }
 
 // Settings is the EaseProbe configuration
 type Settings struct {
-	LogFile    string     `yaml:"logfile"`
-	LogLevel   LogLevel   `yaml:"loglevel"`
+	Name       string     `yaml:"name"`
+	IconURL    string     `yaml:"icon"`
+	PIDFile    string     `yaml:"pid"`
+	Log        Log        `yaml:"log"`
 	TimeFormat string     `yaml:"timeformat"`
+	TimeZone   string     `yaml:"timezone"`
 	Probe      Probe      `yaml:"probe"`
 	Notify     Notify     `yaml:"notify"`
 	SLAReport  SLAReport  `yaml:"sla"`
 	HTTPServer HTTPServer `yaml:"http"`
-	logfile    *os.File   `yaml:"-"`
 }
 
 // Conf is Probe configuration
 type Conf struct {
+	Version  string          `yaml:"version"`
 	HTTP     []http.HTTP     `yaml:"http"`
 	TCP      []tcp.TCP       `yaml:"tcp"`
 	Shell    []shell.Shell   `yaml:"shell"`
 	Client   []client.Client `yaml:"client"`
 	SSH      ssh.SSH         `yaml:"ssh"`
+	TLS      []tls.TLS       `yaml:"tls"`
 	Host     host.Host       `yaml:"host"`
 	Notify   notify.Config   `yaml:"notify"`
 	Settings Settings        `yaml:"settings"`
 }
 
+// Check if string is a url
 func isExternalURL(url string) bool {
-	return strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")
+	if _, err := netUrl.ParseRequestURI(url); err != nil {
+		log.Debugf("ParseRequestedURI: %s failed to parse with error %v", url, err)
+		return false
+	}
+
+	parts, err := netUrl.Parse(url)
+	if err != nil || parts.Host == "" || !strings.HasPrefix(parts.Scheme, "http") {
+		log.Debugf("Parse: %s failed Scheme: %s, Host: %s (err: %v)", url, parts.Scheme, parts.Host, err)
+		return false
+	}
+
+	return true
 }
 
 func getYamlFileFromInternet(url string) ([]byte, error) {
@@ -202,7 +199,7 @@ func getYamlFile(path string) ([]byte, error) {
 }
 
 // New read the configuration from yaml
-func New(conf *string) (Conf, error) {
+func New(conf *string) (*Conf, error) {
 	c := Conf{
 		HTTP:   []http.HTTP{},
 		TCP:    []tcp.TCP{},
@@ -212,23 +209,27 @@ func New(conf *string) (Conf, error) {
 			Bastion: &ssh.BastionMap,
 			Servers: []ssh.Server{},
 		},
+		TLS: []tls.TLS{},
 		Host: host.Host{
 			Bastion: &host.BastionMap,
 			Servers: []host.Server{},
 		},
 		Notify: notify.Config{},
 		Settings: Settings{
-			LogFile:    "",
-			LogLevel:   LogLevel{log.InfoLevel},
+			Name:       global.DefaultProg,
+			IconURL:    global.DefaultIconURL,
+			PIDFile:    filepath.Join(global.GetWorkDir(), global.DefaultPIDFile),
+			Log:        NewLog(),
 			TimeFormat: "2006-01-02 15:04:05 UTC",
+			TimeZone:   "UTC",
 			Probe: Probe{
-				Interval: time.Second * 60,
-				Timeout:  time.Second * 10,
+				Interval: global.DefaultProbeInterval,
+				Timeout:  global.DefaultTimeOut,
 			},
 			Notify: Notify{
 				Retry: global.Retry{
-					Times:    3,
-					Interval: time.Second * 5,
+					Times:    global.DefaultRetryTimes,
+					Interval: global.DefaultRetryInterval,
 				},
 				Dry: false,
 			},
@@ -236,14 +237,21 @@ func New(conf *string) (Conf, error) {
 				Schedule: Daily,
 				Time:     "00:00",
 				Debug:    false,
+				DataFile: global.DefaultDataFile,
+				Backups:  global.DefaultMaxBackups,
+				Channels: []string{global.DefaultChannelName},
 			},
-			logfile: nil,
+			HTTPServer: HTTPServer{
+				IP:        global.DefaultHTTPServerIP,
+				Port:      global.DefaultHTTPServerPort,
+				AccessLog: NewLog(),
+			},
 		},
 	}
 	y, err := getYamlFile(*conf)
 	if err != nil {
 		log.Errorf("error: %v ", err)
-		return c, err
+		return &c, err
 	}
 
 	y = []byte(os.ExpandEnv(string(y)))
@@ -251,12 +259,19 @@ func New(conf *string) (Conf, error) {
 	err = yaml.Unmarshal(y, &c)
 	if err != nil {
 		log.Errorf("error: %v", err)
-		return c, err
+		return &c, err
 	}
 
-	c.initLog()
+	// Initialization
+	global.InitEaseProbeWithTime(c.Settings.Name, c.Settings.IconURL,
+		c.Settings.TimeFormat, c.Settings.TimeZone)
+	c.initData()
+
 	ssh.BastionMap.ParseAllBastionHost()
 	host.BastionMap.ParseAllBastionHost()
+
+	// pass the dry run to the channel
+	channel.SetDryNotify(c.Settings.Notify.Dry)
 
 	config = &c
 
@@ -270,34 +285,57 @@ func New(conf *string) (Conf, error) {
 		}
 	}
 
-	return c, err
+	return &c, err
 }
 
-func (conf *Conf) initLog() {
-	log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
-	if conf == nil {
-		log.SetOutput(os.Stdout)
-		log.SetLevel(log.InfoLevel)
-	} else {
-		// open a file
-		f, err := os.OpenFile(conf.Settings.LogFile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0660)
-		if err != nil {
-			log.Warnf("Cannot open log file: %v", err)
-			log.Infoln("Using Standard Output as the log output...")
-			log.SetOutput(os.Stdout)
-		} else {
-			conf.Settings.logfile = f
-			log.SetOutput(f)
+// InitAllLogs initialize all logs
+func (conf *Conf) InitAllLogs() {
+
+	conf.Settings.Log.InitLog(nil)
+	conf.Settings.Log.LogInfo("Application")
+
+	conf.Settings.HTTPServer.AccessLog.InitLog(log.New())
+	conf.Settings.HTTPServer.AccessLog.LogInfo("Web Access")
+}
+
+func (conf *Conf) initData() {
+
+	// Check if we are explicitly disabled
+	if strings.TrimSpace(conf.Settings.SLAReport.DataFile) == "-" {
+		log.Infof("SLA data disabled by configuration. Skipping SLA data store...")
+		return
+	}
+
+	// Check if we are empty and use global.DefaultDataFile
+	if strings.TrimSpace(conf.Settings.SLAReport.DataFile) == "" {
+		conf.Settings.SLAReport.DataFile = global.DefaultDataFile
+	}
+
+	dir, _ := filepath.Split(conf.Settings.SLAReport.DataFile)
+	// if dir part is not empty
+	if strings.TrimSpace(dir) != "" {
+		// check for `dir`` existence and create intermediate folders
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			log.Infof("Creating base directory for data file!")
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				log.Warnf("Failed to create base directory for data file: %s", err.Error())
+				return
+			}
 		}
-		log.SetLevel(conf.Settings.LogLevel.Level)
 	}
-}
 
-// CloseLogFile close the log file
-func (conf *Conf) CloseLogFile() {
-	if conf.Settings.logfile != nil {
-		conf.Settings.logfile.Close()
+	// check if the data file exists and is a regular file
+	dataInfo, err := os.Stat(conf.Settings.SLAReport.DataFile)
+	if os.IsNotExist(err) || !dataInfo.Mode().IsRegular() {
+		log.Infof("The data file %s, was not found!", conf.Settings.SLAReport.DataFile)
+		return
 	}
+
+	if err := probe.LoadDataFromFile(conf.Settings.SLAReport.DataFile); err != nil {
+		log.Warnf("Cannot load data from file(%s): %v", conf.Settings.SLAReport.DataFile, err)
+	}
+
+	probe.CleanDataFile(conf.Settings.SLAReport.DataFile, conf.Settings.SLAReport.Backups)
 }
 
 // isProbe checks whether a interface is a probe type
@@ -345,7 +383,7 @@ func allProbersHelper(i interface{}) []probe.Prober {
 				continue
 			}
 
-			log.Debugf("--> %s / %s / %v", t.Field(i).Name, t.Field(i).Type.Kind(), vField.Index(j))
+			log.Debugf("--> %s / %s / %+v", t.Field(i).Name, t.Field(i).Type.Kind(), vField.Index(j))
 			probers = append(probers, vField.Index(j).Addr().Interface().(probe.Prober))
 		}
 	}
@@ -375,7 +413,7 @@ func (conf *Conf) AllNotifiers() []notify.Notify {
 				log.Debugf("%s is not a notify type", v.Index(j).Type())
 				continue
 			}
-			log.Debugf("--> %s - %s - %v", t.Field(i).Name, t.Field(i).Type.Kind(), v.Index(j))
+			log.Debugf("--> %s - %s - %+v", t.Field(i).Name, t.Field(i).Type.Kind(), v.Index(j))
 			notifies = append(notifies, v.Index(j).Addr().Interface().(notify.Notify))
 		}
 	}

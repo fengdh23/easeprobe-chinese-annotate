@@ -36,18 +36,13 @@ type NotifyConfig struct {
 	WebhookURL         string `yaml:"webhook"`
 }
 
-// Kind return the type of Notify
-func (c *NotifyConfig) Kind() string {
-	return c.MyKind
-}
-
 // Config configures the slack notification
 func (c *NotifyConfig) Config(gConf global.NotifySettings) error {
-	c.MyKind = "lark"
-	c.Format = report.Lark
-	c.SendFunc = c.SendLark
+	c.NotifyKind = "lark"
+	c.NotifyFormat = report.Lark
+	c.NotifySendFunc = c.SendLark
 	c.DefaultNotify.Config(gConf)
-	log.Debugf("Notification [%s] - [%s] configuration: %+v", c.MyKind, c.Name, c)
+	log.Debugf("Notification [%s] - [%s] configuration: %+v", c.NotifyKind, c.NotifyName, c)
 	return nil
 }
 
@@ -87,7 +82,7 @@ func (c *NotifyConfig) SendLarkNotification(msg string) error {
 	}
 	// Server returns {"Extra":null,"StatusCode":0,"StatusMessage":"success"} on success
 	// otherwise it returns {"code":9499,"msg":"Bad Request","data":{}}
-	if ret["StatusCode"] != "0" {
+	if statusCode, ok := ret["StatusCode"].(float64); !ok || statusCode != 0 {
 		return fmt.Errorf("Error response from Lark [%d] - [%s]", int(ret["code"].(float64)), ret["msg"])
 	}
 	return nil

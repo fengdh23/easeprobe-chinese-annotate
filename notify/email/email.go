@@ -37,20 +37,16 @@ type NotifyConfig struct {
 	User               string `yaml:"username"`
 	Pass               string `yaml:"password"`
 	To                 string `yaml:"to"`
-}
-
-// Kind return the type of Notify
-func (c *NotifyConfig) Kind() string {
-	return c.MyKind
+	From               string `yaml:"from"`
 }
 
 // Config configures the log files
 func (c *NotifyConfig) Config(gConf global.NotifySettings) error {
-	c.MyKind = "email"
-	c.Format = report.HTML
-	c.SendFunc = c.SendMail
+	c.NotifyKind = "email"
+	c.NotifyFormat = report.HTML
+	c.NotifySendFunc = c.SendMail
 	c.DefaultNotify.Config(gConf)
-	log.Debugf("Notification [%s] - [%s] configuration: %+v", c.MyKind, c.Name, c)
+	log.Debugf("Notification [%s] - [%s] configuration: %+v", c.NotifyKind, c.NotifyName, c)
 	return nil
 }
 
@@ -63,6 +59,10 @@ func (c *NotifyConfig) SendMail(subject string, message string) error {
 	}
 
 	email := "Notification" + "<" + c.User + ">"
+	if c.From != "" {
+		email = c.From
+	}
+
 	header := make(map[string]string)
 	header["From"] = email
 	header["To"] = c.To

@@ -27,6 +27,7 @@ import (
 type Prober interface {
 	Kind() string
 	Name() string
+	Channels() []string
 	Timeout() time.Duration
 	Interval() time.Duration
 	Result() *Result

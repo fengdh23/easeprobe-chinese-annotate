@@ -25,7 +25,10 @@ import (
 	"github.com/megaease/easeprobe/notify/email"
 	"github.com/megaease/easeprobe/notify/lark"
 	"github.com/megaease/easeprobe/notify/log"
+	"github.com/megaease/easeprobe/notify/shell"
 	"github.com/megaease/easeprobe/notify/slack"
+	"github.com/megaease/easeprobe/notify/sms"
+	"github.com/megaease/easeprobe/notify/teams"
 	"github.com/megaease/easeprobe/notify/telegram"
 	"github.com/megaease/easeprobe/notify/wecom"
 	"github.com/megaease/easeprobe/probe"
@@ -42,11 +45,16 @@ type Config struct {
 	Wecom    []wecom.NotifyConfig    `yaml:"wecom"`
 	Dingtalk []dingtalk.NotifyConfig `yaml:"dingtalk"`
 	Lark     []lark.NotifyConfig     `yaml:"lark"`
+	Sms      []sms.NotifyConfig      `yaml:"sms"`
+	Teams    []teams.NotifyConfig    `yaml:"teams"`
+	Shell    []shell.NotifyConfig    `yaml:"shell"`
 }
 
 // Notify is the configuration of the Notify
 type Notify interface {
 	Kind() string
+	Name() string
+	Channels() []string
 	Config(global.NotifySettings) error
 	Notify(probe.Result)
 	NotifyStat([]probe.Prober)

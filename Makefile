@@ -27,12 +27,12 @@ all: ${TARGET}
 ${TARGET}: ${SOURCE}
 	mkdir -p ${RELEASE_DIR}
 	go mod tidy
-	go build -a -ldflags '-s -w -extldflags "-static"' -gcflags=-G=3 -o ${TARGET} ${MKFILE_DIR}cmd/easeprobe
+	CGO_ENABLED=0 go build -a -ldflags '-s -w -extldflags "-static"' -gcflags=-G=3 -o ${TARGET} ${MKFILE_DIR}cmd/easeprobe
 
 build: all
 
 test:
-	go test -race -count=1 ./...
+	go test -gcflags=-l -cover -race ${TEST_FLAGS} -v ./...
 
 docker:
 	sudo DOCKER_BUILDKIT=1 docker build -t megaease/easeprobe -f ${MKFILE_DIR}/resources/Dockerfile ${MKFILE_DIR}

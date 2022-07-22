@@ -18,33 +18,45 @@
 package report
 
 import (
+	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/megaease/easeprobe/global"
 	"github.com/megaease/easeprobe/probe"
+
 	log "github.com/sirupsen/logrus"
 )
 
-// ToText convert the result object to ToText
-func ToText(r probe.Result) string {
-	tpl := "[%s] %s\n%s - ⏱ %s\n%s"
+// ToLog convert the result object to Log format
+func ToLog(r probe.Result) string {
+	tpl := `title="%s"; name="%s"; status="%s"; endpoint="%s"; rtt="%s"; time="%s"; message="%s"`
 	rtt := r.RoundTripTime.Round(time.Millisecond)
 	return fmt.Sprintf(tpl,
-		r.Title(), r.Status.Emoji(), r.Endpoint, rtt, r.Message)
+		r.Title(), r.Name, r.Status.String(), r.Endpoint, rtt, FormatTime(r.StartTime), r.Message)
+}
+
+// ToText convert the result object to ToText
+func ToText(r probe.Result) string {
+	tpl := "[%s] %s\n%s - ⏱ %s\n%s\n%s"
+	rtt := r.RoundTripTime.Round(time.Millisecond)
+	return fmt.Sprintf(tpl,
+		r.Title(), r.Status.Emoji(), r.Endpoint, rtt, r.Message,
+		global.FooterString()+" at "+FormatTime(r.StartTime))
 }
 
 // resultDTO only for JSON format notification
 type resultDTO struct {
-	Name           string               `json:"name"`
-	Endpoint       string               `json:"endpoint"`
-	StartTime      time.Time            `json:"time"`
-	StartTimestamp int64                `json:"timestamp"`
-	RoundTripTime  probe.ConfigDuration `json:"rtt"`
-	Status         probe.Status         `json:"status"`
-	PreStatus      probe.Status         `json:"prestatus"`
-	Message        string               `json:"message"`
+	Name           string        `json:"name"`
+	Endpoint       string        `json:"endpoint"`
+	StartTime      time.Time     `json:"time"`
+	StartTimestamp int64         `json:"timestamp"`
+	RoundTripTime  time.Duration `json:"rtt"`
+	Status         probe.Status  `json:"status"`
+	PreStatus      probe.Status  `json:"prestatus"`
+	Message        string        `json:"message"`
 }
 
 // ToJSON convert the result object to ToJSON
@@ -116,11 +128,11 @@ func ToHTML(r probe.Result) string {
 					<td class="data">%s</td>
 				</tr>
 			</table>
-		` + HTMLFooter()
+		` + HTMLFooter(FormatTime(r.StartTime))
 
 	rtt := r.RoundTripTime.Round(time.Millisecond)
 	return fmt.Sprintf(html, r.Name, r.Endpoint, r.Status.Emoji(), r.Status.String(),
-		r.StartTime.Format(r.TimeFormat), rtt, r.Message)
+		FormatTime(r.StartTime), rtt, r.Message)
 }
 
 // ToMarkdown convert the object to ToMarkdown
@@ -134,13 +146,14 @@ func ToMarkdownSocial(r probe.Result) string {
 }
 
 func markdown(r probe.Result, f Format) string {
-	tpl := "**%s** %s\n%s - ⏱ %s\n%s"
+	tpl := "**%s** %s\n%s - ⏱ %s\n%s\n> %s"
 	if f == MarkdownSocial {
-		tpl = "*%s* %s\n%s - ⏱ %s\n%s"
+		tpl = "*%s* %s\n%s - ⏱ %s\n%s\n> %s"
 	}
 	rtt := r.RoundTripTime.Round(time.Millisecond)
 	return fmt.Sprintf(tpl,
-		r.Title(), r.Status.Emoji(), r.Endpoint, rtt, r.Message)
+		r.Title(), r.Status.Emoji(), r.Endpoint, rtt, r.Message,
+		global.FooterString()+" at "+FormatTime(r.StartTime))
 }
 
 // ToSlack convert the object to ToSlack notification
@@ -164,12 +177,12 @@ func ToSlack(r probe.Result) string {
 				"elements": [
 					{
 						"type": "image",
-						"image_url": "` + global.Icon + `",
+						"image_url": "` + global.GetEaseProbe().IconURL + `",
 						"alt_text": "` + global.OrgProg + `"
 					},
 					{
 						"type": "mrkdwn",
-						"text": "` + global.Prog + ` %s"
+						"text": "` + global.FooterString() + ` %s"
 					}
 				]
 			}
@@ -179,7 +192,7 @@ func ToSlack(r probe.Result) string {
 	rtt := r.RoundTripTime.Round(time.Millisecond)
 	body := fmt.Sprintf("*%s*\\n>%s %s - ⏱ %s\n>%s",
 		r.Title(), r.Status.Emoji(), r.Endpoint, rtt, JSONEscape(r.Message))
-	context := SlackTimeFormation(r.StartTime, " probed at ", r.TimeFormat)
+	context := SlackTimeFormation(r.StartTime, " probed at ", global.GetTimeFormat())
 	summary := fmt.Sprintf("%s %s - %s", r.Title(), r.Status.Emoji(), JSONEscape(r.Message))
 	return fmt.Sprintf(json, summary, body, context)
 }
@@ -217,7 +230,7 @@ func ToLark(r probe.Result) string {
 					"elements": [
 						{
 							"tag": "plain_text",
-							"content": global.Prog 
+							"content": "%s"
 						}
 					]
 				}
@@ -240,5 +253,54 @@ func ToLark(r probe.Result) string {
 	title := fmt.Sprintf("%s %s", r.Title(), r.Status.Emoji())
 	rtt := r.RoundTripTime.Round(time.Millisecond)
 	content := fmt.Sprintf("%s - ⏱ %s\\n%s", r.Endpoint, rtt, JSONEscape(r.Message))
-	return fmt.Sprintf(json, headerColor, title, content)
+	footer := global.FooterString() + " probed at " + FormatTime(r.StartTime)
+	return fmt.Sprintf(json, headerColor, title, content, footer)
+}
+
+// ToCSV convert the object to CSV
+func ToCSV(r probe.Result) string {
+	rtt := fmt.Sprintf("%d", r.RoundTripTime.Round(time.Millisecond))
+	time := FormatTime(r.StartTime)
+	timestamp := fmt.Sprintf("%d", r.StartTimestamp)
+	data := [][]string{
+		{"Title", "Name", "Endpoint", "Status", "PreStatus", "RoundTripTime", "Time", "Timestamp", "Message"},
+		{r.Title(), r.Name, r.Endpoint, r.Status.String(), r.PreStatus.String(), rtt, time, timestamp, r.Message},
+	}
+
+	buf := new(bytes.Buffer)
+	w := csv.NewWriter(buf)
+
+	if err := w.WriteAll(data); err != nil {
+		log.Errorf("ToCSV(): Failed to write to csv buffer: %v", err)
+		return ""
+	}
+	return buf.String()
+}
+
+// ToShell convert the result object to shell variables
+func ToShell(r probe.Result) string {
+	env := make(map[string]string)
+
+	// set the notify type variable
+	env["EASEPROBE_TYPE"] = "Status"
+
+	// set individual variables
+	env["EASEPROBE_TITLE"] = r.Title()
+	env["EASEPROBE_NAME"] = r.Name
+	env["EASEPROBE_ENDPOINT"] = r.Endpoint
+	env["EASEPROBE_STATUS"] = r.Status.String()
+	env["EASEPROBE_TIMESTAMP"] = fmt.Sprintf("%d", r.StartTimestamp)
+	env["EASEPROBE_RTT"] = fmt.Sprintf("%d", r.RoundTripTime.Round(time.Millisecond))
+	env["EASEPROBE_MESSAGE"] = r.Message
+
+	// set JSON and CVS format
+	env["EASEPROBE_JSON"] = ToJSON(r)
+	env["EASEPROBE_CSV"] = ToCSV(r)
+
+	buf, err := json.Marshal(env)
+	if err != nil {
+		log.Errorf("ToShell(): Failed to marshal env to json: %s", err)
+		return ""
+	}
+	return string(buf)
 }

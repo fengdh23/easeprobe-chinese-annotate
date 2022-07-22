@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"time"
 
 	"github.com/megaease/easeprobe/global"
 	"github.com/megaease/easeprobe/notify/base"
@@ -36,18 +35,13 @@ type NotifyConfig struct {
 	WebhookURL         string `yaml:"webhook"`
 }
 
-// Kind return the type of Notify
-func (c *NotifyConfig) Kind() string {
-	return c.MyKind
-}
-
 // Config configures the slack notification
 func (c *NotifyConfig) Config(gConf global.NotifySettings) error {
-	c.MyKind = "slack"
-	c.Format = report.Slack
-	c.SendFunc = c.SendSlack
+	c.NotifyKind = "slack"
+	c.NotifyFormat = report.Slack
+	c.NotifySendFunc = c.SendSlack
 	c.DefaultNotify.Config(gConf)
-	log.Debugf("Notification [%s] - [%s] configuration: %+v", c.MyKind, c.Name, c)
+	log.Debugf("Notification [%s] - [%s] configuration: %+v", c.NotifyKind, c.NotifyName, c)
 	return nil
 }
 
@@ -67,7 +61,7 @@ func (c *NotifyConfig) SendSlackNotification(msg string) error {
 	req.Header.Add("Content-Type", "application/json")
 	req.Close = true
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: c.Timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

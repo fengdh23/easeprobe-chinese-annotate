@@ -22,22 +22,29 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/megaease/easeprobe/global"
 	"github.com/megaease/easeprobe/probe"
 	"github.com/megaease/easeprobe/probe/base"
+	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
 // Shell implements a config for shell command (os.Exec)
 type Shell struct {
-	base.DefaultOptions `yaml:",inline"`
-	Command             string   `yaml:"cmd"`
-	Args                []string `yaml:"args,omitempty"`
-	Env                 []string `yaml:"env,omitempty"`
-	Contain             string   `yaml:"contain,omitempty"`
-	NotContain          string   `yaml:"not_contain,omitempty"`
+	base.DefaultProbe `yaml:",inline"`
+	Command           string   `yaml:"cmd"`
+	Args              []string `yaml:"args,omitempty"`
+	Env               []string `yaml:"env,omitempty"`
+	CleanEnv          bool     `yaml:"clean_env,omitempty"`
+
+	// Output Text Checker
+	probe.TextChecker `yaml:",inline"`
+
+	exitCode  int `yaml:"-"`
+	outputLen int `yaml:"-"`
+
+	metrics *metrics `yaml:"-"`
 }
 
 // Config Shell Config Object
@@ -45,10 +52,16 @@ func (s *Shell) Config(gConf global.ProbeSettings) error {
 	kind := "shell"
 	tag := ""
 	name := s.ProbeName
-	s.DefaultOptions.Config(gConf, kind, tag, name,
-		probe.CommandLine(s.Command, s.Args), s.DoProbe)
+	s.DefaultProbe.Config(gConf, kind, tag, name,
+		global.CommandLine(s.Command, s.Args), s.DoProbe)
 
-	log.Debugf("[%s] configuration: %+v, %+v", s.ProbeKind, s, s.Result())
+	if err := s.TextChecker.Config(); err != nil {
+		return err
+	}
+
+	s.metrics = newMetrics(kind, tag)
+
+	log.Debugf("[%s / %s] configuration: %+v, %+v", s.ProbeKind, s.ProbeName, s, s.Result())
 	return nil
 }
 
@@ -58,36 +71,56 @@ func (s *Shell) DoProbe() (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.ProbeTimeout)
 	defer cancel()
 
-	for _, e := range s.Env {
-		v := strings.Split(e, "=")
-		os.Setenv(v[0], v[1])
-	}
-
 	cmd := exec.CommandContext(ctx, s.Command, s.Args...)
+	if s.CleanEnv == false {
+		cmd.Env = append(os.Environ(), s.Env...)
+	} else {
+		log.Infof("[%s / %s] clean the environment variables", s.ProbeKind, s.ProbeName)
+		cmd.Env = s.Env
+	}
 	output, err := cmd.CombinedOutput()
 
 	status := true
 	message := "Shell Command has been Run Successfully!"
 
+	s.exitCode = 0
+	s.outputLen = len(output)
 	if err != nil {
-		exitCode := 0
 		if exitError, ok := err.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
+			s.exitCode = exitError.ExitCode()
+			message = fmt.Sprintf("Error: %v, ExitCode(%d), Output:%s",
+				err, s.exitCode, probe.CheckEmpty(string(output)))
+		} else {
+			message = fmt.Sprintf("Error: %v, ExitCode(null), Output:%s",
+				err, probe.CheckEmpty(string(output)))
 		}
-
-		message = fmt.Sprintf("Error: %v, ExitCode(%d), Output:%s",
-			err, exitCode, probe.CheckEmpty(string(output)))
 		log.Errorf(message)
 		status = false
 	}
-	log.Debugf("[%s / %s] - %s", s.ProbeKind, s.ProbeName, probe.CommandLine(s.Command, s.Args))
+	log.Debugf("[%s / %s] - %s", s.ProbeKind, s.ProbeName, global.CommandLine(s.Command, s.Args))
 	log.Debugf("[%s / %s] - %s", s.ProbeKind, s.ProbeName, probe.CheckEmpty(string(output)))
 
-	if err := probe.CheckOutput(s.Contain, s.NotContain, string(output)); err != nil {
+	s.ExportMetrics()
+
+	log.Debugf("[%s / %s] - %s", s.ProbeKind, s.ProbeName, s.TextChecker.String())
+	if err := s.Check(string(output)); err != nil {
 		log.Errorf("[%s / %s] - %v", s.ProbeKind, s.ProbeName, err)
-		s.ProbeResult.Message = fmt.Sprintf("Error: %v", err)
+		message = fmt.Sprintf("Error: %v", err)
 		status = false
 	}
 
 	return status, message
+}
+
+// ExportMetrics export shell metrics
+func (s *Shell) ExportMetrics() {
+	s.metrics.ExitCode.With(prometheus.Labels{
+		"name": s.ProbeName,
+		"exit": fmt.Sprintf("%d", s.exitCode),
+	}).Inc()
+
+	s.metrics.OutputLen.With(prometheus.Labels{
+		"name": s.ProbeName,
+		"exit": fmt.Sprintf("%d", s.exitCode),
+	}).Set(float64(s.outputLen))
 }

@@ -18,7 +18,10 @@
 package conf
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 
 	"github.com/megaease/easeprobe/global"
@@ -39,6 +42,7 @@ const (
 	Unknown DriverType = iota
 	MySQL
 	Redis
+	Memcache
 	Kafka
 	Mongo
 	PostgreSQL
@@ -49,6 +53,7 @@ const (
 var DriverMap = map[DriverType]string{
 	MySQL:      "mysql",
 	Redis:      "redis",
+	Memcache:   "memcache",
 	Kafka:      "kafka",
 	Mongo:      "mongo",
 	PostgreSQL: "postgres",
@@ -58,15 +63,31 @@ var DriverMap = map[DriverType]string{
 
 // Options implements the configuration for native client
 type Options struct {
-	base.DefaultOptions `yaml:",inline"`
+	base.DefaultProbe `yaml:",inline"`
 
-	Host       string     `yaml:"host"`
-	DriverType DriverType `yaml:"driver"`
-	Username   string     `yaml:"username"`
-	Password   string     `yaml:"password"`
+	Host       string            `yaml:"host"`
+	DriverType DriverType        `yaml:"driver"`
+	Username   string            `yaml:"username"`
+	Password   string            `yaml:"password"`
+	Data       map[string]string `yaml:"data"`
 
 	//TLS
 	global.TLS `yaml:",inline"`
+}
+
+// Check do the configuration check
+func (d *Options) Check() error {
+	_, port, err := net.SplitHostPort(d.Host)
+	if err != nil {
+		return fmt.Errorf("Invalid Host: %s. %v", d.Host, err)
+	}
+	if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+		return fmt.Errorf("Invalid Port: %s", port)
+	}
+	if d.DriverType == Unknown {
+		return fmt.Errorf("Unknown driver")
+	}
+	return nil
 }
 
 // DriverTypeMap is the map of driver [name, driver]
@@ -97,8 +118,8 @@ func (d *DriverType) DriverType(name string) DriverType {
 }
 
 // MarshalYAML is marshal the driver type
-func (d *DriverType) MarshalYAML() ([]byte, error) {
-	return []byte(d.String()), nil
+func (d DriverType) MarshalYAML() (interface{}, error) {
+	return d.String(), nil
 }
 
 // UnmarshalYAML is unmarshal the driver type
@@ -113,11 +134,15 @@ func (d *DriverType) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 // UnmarshalJSON is Unmarshal the driver type
 func (d *DriverType) UnmarshalJSON(b []byte) (err error) {
-	*d = d.DriverType(strings.ToLower(string(b)))
+	var s string
+	if err = json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	*d = d.DriverType(strings.ToLower(s))
 	return nil
 }
 
 // MarshalJSON is marshal the driver
-func (d *DriverType) MarshalJSON() (b []byte, err error) {
+func (d DriverType) MarshalJSON() (b []byte, err error) {
 	return []byte(fmt.Sprintf(`"%s"`, d.String())), nil
 }
